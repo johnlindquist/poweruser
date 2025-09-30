@@ -106,8 +106,11 @@ Use modern ${testFramework} best practices including:
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Write' && input.tool_input.file_path?.includes('.test.')) {
-                  console.log(`✍️  Generating: ${input.tool_input.file_path}`);
+                if (input.hook_event_name === 'PreToolUse' && input.tool_name === 'Write') {
+                  const filePath = (input.tool_input as any).file_path;
+                  if (filePath?.includes('.test.')) {
+                    console.log(`✍️  Generating: ${filePath}`);
+                  }
                 }
                 return { continue: true };
               },
@@ -118,8 +121,11 @@ Use modern ${testFramework} best practices including:
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Write' && input.tool_response?.message?.includes('test')) {
-                  console.log(`✅ Created test file successfully`);
+                if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'Write') {
+                  const response = input.tool_response as any;
+                  if (response?.message?.includes('test')) {
+                    console.log(`✅ Created test file successfully`);
+                  }
                 }
                 return { continue: true };
               },
@@ -150,7 +156,7 @@ Use modern ${testFramework} best practices including:
   // Stream results
   for await (const message of result) {
     if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c) => c.type === 'text');
+      const textContent = message.message.content.find((c: any) => c.type === 'text');
       if (textContent && textContent.type === 'text') {
         // Only show planning messages, not tool responses
         if (!textContent.text.includes('tool_use')) {
@@ -216,6 +222,11 @@ Examples:
 
 const targetPath = args[0];
 
+if (!targetPath) {
+  console.error('❌ Error: Target path is required');
+  process.exit(1);
+}
+
 // Parse CLI options
 const options: TestGeneratorOptions = {
   targetPath,
@@ -237,7 +248,7 @@ for (let i = 1; i < args.length; i++) {
       options.generateIntegrationTests = true;
       break;
     case '--coverage':
-      options.coverageThreshold = parseInt(args[++i], 10);
+      options.coverageThreshold = parseInt(args[++i] || '80', 10);
       break;
   }
 }

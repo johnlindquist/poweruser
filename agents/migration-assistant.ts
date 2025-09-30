@@ -97,66 +97,78 @@ Start by analyzing the codebase.`
       hooks: {
         PreToolUse: [
           {
-            async hooks(input, toolUseID, { signal }) {
-              // Monitor file edits and warn about risky changes
-              if (input.tool_name === 'Edit' || input.tool_name === 'Write') {
-                const filePath = (input.tool_input as any).file_path || '';
+            hooks: [
+              async (input, toolUseID, { signal }) => {
+                // Monitor file edits and warn about risky changes
+                if (input.hook_event_name === 'PreToolUse') {
+                  if (input.tool_name === 'Edit' || input.tool_name === 'Write') {
+                    const filePath = (input.tool_input as any).file_path || '';
 
-                // Warn about critical file changes
-                if (filePath.includes('package.json') ||
-                    filePath.includes('package-lock.json') ||
-                    filePath.includes('tsconfig.json')) {
-                  console.log(`⚠️  About to modify critical file: ${filePath}`);
+                    // Warn about critical file changes
+                    if (filePath.includes('package.json') ||
+                        filePath.includes('package-lock.json') ||
+                        filePath.includes('tsconfig.json')) {
+                      console.log(`⚠️  About to modify critical file: ${filePath}`);
+                    }
+                  }
+
+                  // Monitor bash commands for test execution
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any).command || '';
+                    if (command.includes('test') || command.includes('npm test')) {
+                      console.log('🧪 Running tests...');
+                    }
+                  }
                 }
-              }
 
-              // Monitor bash commands for test execution
-              if (input.tool_name === 'Bash') {
-                const command = (input.tool_input as any).command || '';
-                if (command.includes('test') || command.includes('npm test')) {
-                  console.log('🧪 Running tests...');
-                }
+                return {
+                  continue: true
+                };
               }
-
-              return {
-                continue: true
-              };
-            }
+            ]
           }
         ],
 
         PostToolUse: [
           {
-            async hooks(input, toolUseID, { signal }) {
-              // Monitor test results
-              if (input.tool_name === 'Bash') {
-                const command = (input.tool_input as any).command || '';
-                const output = (input.tool_response as any).output || '';
+            hooks: [
+              async (input, toolUseID, { signal }) => {
+                // Monitor test results
+                if (input.hook_event_name === 'PostToolUse') {
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any).command || '';
+                    const output = (input.tool_response as any).output || '';
 
-                if (command.includes('test') || command.includes('npm test')) {
-                  if (output.includes('FAIL') || output.includes('failed')) {
-                    console.log('❌ Tests failed! Migration step may have issues.');
-                  } else if (output.includes('PASS') || output.includes('passed')) {
-                    console.log('✅ Tests passed! Safe to continue.');
+                    if (command.includes('test') || command.includes('npm test')) {
+                      if (output.includes('FAIL') || output.includes('failed')) {
+                        console.log('❌ Tests failed! Migration step may have issues.');
+                      } else if (output.includes('PASS') || output.includes('passed')) {
+                        console.log('✅ Tests passed! Safe to continue.');
+                      }
+                    }
                   }
                 }
-              }
 
-              return {
-                continue: true
-              };
-            }
+                return {
+                  continue: true
+                };
+              }
+            ]
           }
         ],
 
         Notification: [
           {
-            async hooks(input, toolUseID, { signal }) {
-              console.log(`📢 ${input.title || 'Notification'}: ${input.message}`);
-              return {
-                continue: true
-              };
-            }
+            hooks: [
+              async (input, toolUseID, { signal }) => {
+                if (input.hook_event_name === 'Notification') {
+                  console.log(`📢 ${input.title || 'Notification'}: ${input.message}`);
+                }
+                return {
+                  continue: true
+                };
+              }
+            ]
           }
         ]
       },

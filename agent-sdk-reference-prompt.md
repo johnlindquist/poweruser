@@ -1815,6 +1815,9 @@ Read @ideas.md
 ## GOAL:
 
 1. ULTRATHINK! Come up with 3 new ideas for how to use the Agent SDK.
+  a. One idea should be outside-the-box thinking to help devs achieve their dreams
+  b. One idea should be a practical, everyday use case
+  c. One idea should be focused on a tiny task/script that runs quickly
 2. Then add them to @ideas.md
 3. Pick your favorite from the @ideas.md that haven't been implemented yet.
 4. Remove the idea from the @ideas.md.
