@@ -1,292 +1,170 @@
 #!/usr/bin/env bun
 
 /**
- * Learning Path Generator Agent
+ * Learning Path Generator
  *
- * This agent creates personalized, progressive learning paths for understanding complex codebases.
- * It helps developers learn a new codebase by creating structured tutorials that start from
- * user-facing features and progressively reveal implementation layers.
+ * An outside-the-box agent that creates personalized learning roadmaps based on your code.
  *
  * Features:
- * - Generates step-by-step tutorials with annotated code examples
- * - Identifies core concepts, design patterns, and architectural principles
- * - Creates dependency graphs showing how components relate
- * - Adapts explanations based on developer experience level
- * - Produces interactive "code tours" with checkpoints and quizzes
+ * - Analyzes your current codebase and tech stack to understand your skill level
+ * - Identifies gaps in your knowledge based on modern best practices and industry trends
+ * - Generates a structured learning path with curated resources, exercises, and projects
+ * - Suggests open source contributions aligned with your learning goals
+ * - Tracks progress by analyzing your new commits and projects over time
+ * - Creates portfolio projects that demonstrate your growing expertise
+ * - Connects learning objectives to real career opportunities and job requirements
+ *
+ * Perfect for developers who want to level up but don't know where to focus.
  *
  * Usage:
- *   bun run agents/learning-path-generator.ts <path-to-codebase> [options]
+ *   bun run agents/learning-path-generator.ts [directory] [target-role]
  *
- * Options:
- *   --feature <name>        Start from a specific feature/component
- *   --level <beginner|intermediate|advanced>  Developer experience level
- *   --output <path>         Output directory for tutorials (default: ./learning-paths)
- *   --format <markdown|html|json>  Output format (default: markdown)
+ * Examples:
+ *   bun run agents/learning-path-generator.ts
+ *   bun run agents/learning-path-generator.ts . "Senior Frontend Engineer"
+ *   bun run agents/learning-path-generator.ts ~/projects/my-app "Full Stack Developer"
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolve } from 'path';
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { resolve } from "path";
 
-interface LearningPathOptions {
-  codebasePath: string;
-  feature?: string;
-  experienceLevel: 'beginner' | 'intermediate' | 'advanced';
-  outputDir: string;
-  outputFormat: 'markdown' | 'html' | 'json';
-}
+// Parse command-line arguments
+const args = process.argv.slice(2);
+const targetDir = args[0] ? resolve(args[0]) : process.cwd();
+const targetRole = args[1] || "Senior Software Engineer";
 
-async function generateLearningPath(options: LearningPathOptions) {
-  const {
-    codebasePath,
-    feature,
-    experienceLevel,
-    outputDir,
-    outputFormat,
-  } = options;
+console.log("🎓 Learning Path Generator");
+console.log("=".repeat(50));
+console.log(`📁 Analyzing directory: ${targetDir}`);
+console.log(`🎯 Target role: ${targetRole}`);
+console.log("=".repeat(50));
+console.log();
 
-  console.log('📚 Starting Learning Path Generator...\n');
-  console.log(`Codebase: ${codebasePath}`);
-  if (feature) console.log(`Feature Focus: ${feature}`);
-  console.log(`Experience Level: ${experienceLevel}`);
-  console.log(`Output Directory: ${outputDir}`);
-  console.log(`Output Format: ${outputFormat}\n`);
+const prompt = `You are a Learning Path Generator that helps developers create personalized learning roadmaps.
 
-  const prompt = `
-You are an expert technical educator specializing in helping developers understand complex codebases.
+Analyze the codebase at: ${targetDir}
 
-Your mission: Create a comprehensive, progressive learning path for the codebase at "${codebasePath}".
+Target role: ${targetRole}
 
-## Context
-- Experience Level: ${experienceLevel}
-- ${feature ? `Focus on the "${feature}" feature/component` : 'Provide a general overview of the entire codebase'}
-- Output Directory: ${outputDir}
-- Format: ${outputFormat}
+Please perform the following analysis:
 
-## Your Task
+1. **Tech Stack Analysis**
+   - Identify all languages, frameworks, and tools used in the codebase
+   - Use Grep and Glob to find package.json, requirements.txt, Gemfile, go.mod, etc.
+   - Analyze the code patterns and architecture to understand skill level
+   - Determine which technologies are used most heavily
 
-Create a structured learning path by following these steps:
+2. **Skill Gap Identification**
+   - Based on the current tech stack, identify what's missing for the target role
+   - Use WebSearch to research modern best practices for the target role
+   - Compare current skills with industry trends and in-demand technologies
+   - Identify specific knowledge gaps (e.g., testing, performance, security, etc.)
 
-### Phase 1: Discovery & Mapping
-1. Use Glob and Grep to analyze the codebase structure:
-   - Identify entry points (main files, routes, CLI commands)
-   - Map out the project's directory structure
-   - Find configuration files and understand the tech stack
-   - Locate test files to understand intended behavior
+3. **Learning Path Generation**
+   Create a structured learning roadmap with:
+   - 3-5 major learning objectives prioritized by impact
+   - For each objective:
+     * Why it matters for the target role
+     * Estimated time to learn (be realistic)
+     * Curated resources (official docs, courses, books, articles)
+     * Hands-on exercises and projects to practice
+     * How to demonstrate this skill in your portfolio
 
-2. Create a high-level architecture overview:
-   - Identify main components/modules
-   - Understand data flow patterns
-   - Recognize design patterns in use
-   - Document key dependencies
+4. **Open Source Contribution Suggestions**
+   - Suggest 5-10 open source projects aligned with learning goals
+   - Use WebSearch to find projects in the same tech stack
+   - Prioritize projects with "good first issue" tags
+   - Explain how contributing to each project will help skill development
 
-### Phase 2: Learning Path Design
-Create a progressive learning path with these checkpoints:
+5. **Portfolio Project Ideas**
+   - Suggest 2-3 portfolio projects that fill skill gaps
+   - Projects should demonstrate new skills to potential employers
+   - Include: problem statement, tech stack, key features, complexity estimate
 
-**Level 1: User-Facing Layer**
-- Start with what users see/interact with
-- Explain the user journey through the code
-- Show entry points and request/response flow
-${experienceLevel === 'beginner' ? '- Include basic programming concepts explanations' : ''}
+6. **Career Connection**
+   - Map the learning path to job requirements (use WebSearch for job postings)
+   - Estimate timeline to become competitive for target role
+   - Suggest how to showcase progress (blog posts, GitHub, LinkedIn)
 
-**Level 2: Business Logic Layer**
-- Explain core business rules and algorithms
-- Show how data is processed and transformed
-- Identify service classes and their responsibilities
-${experienceLevel === 'advanced' ? '- Analyze architectural trade-offs and design decisions' : ''}
+7. **Progress Tracking Plan**
+   - Suggest how to track progress using git commits and projects
+   - Create milestones for the first 30, 60, and 90 days
+   - Set up a system for regular self-assessment
 
-**Level 3: Data & Infrastructure Layer**
-- Explain data models and schemas
-- Show database interactions or state management
-- Cover external service integrations
-${experienceLevel === 'advanced' ? '- Discuss scalability and performance considerations' : ''}
+**Output Format:**
+Generate a comprehensive markdown document named \`learning-path-${new Date().toISOString().split('T')[0]}.md\` with all the information above, beautifully formatted with:
+- Executive summary at the top
+- Clear sections with headings and subheadings
+- Bullet points and numbered lists
+- Links to resources
+- Checkboxes for tracking progress
+- Motivational language to keep developers engaged
 
-### Phase 3: Tutorial Generation
-For each level, create tutorial documents with:
+Be specific, actionable, and encouraging. This roadmap should transform aimless learning into a strategic career investment.
 
-1. **Overview Section**: Summarize what will be learned
-2. **Key Concepts**: Define important terms and patterns
-3. **Code Walkthrough**:
-   - Use Read to extract relevant code snippets
-   - Add line-by-line annotations explaining complex parts
-   - Show how different files connect together
-4. **Hands-On Exercise**:
-   - Suggest a small modification to try
-   - Explain expected outcomes
-5. **Quiz/Checkpoint**:
-   - 3-5 questions to verify understanding
-   - Include answers with explanations
-6. **Next Steps**: Preview what comes next
+IMPORTANT: Write the final learning path to a file using the Write tool.`;
 
-### Phase 4: Reference Materials
-Create supplementary materials:
-- **Glossary**: Define key terms and concepts
-- **Component Index**: Quick reference of main components
-- **Dependency Graph**: Visual representation of how components relate
-- **Common Patterns**: Document recurring patterns with examples
-- **Troubleshooting Guide**: Common issues and solutions
-
-### Phase 5: Output Generation
-Use Write to create tutorial files in the output directory:
-- Create index file listing all tutorials in order
-- Generate one file per learning checkpoint
-- Include a README with instructions on how to use the learning path
-- Add metadata for tracking progress
-
-## Guidelines
-${experienceLevel === 'beginner' ? `
-- Avoid jargon; explain technical terms
-- Include analogies and real-world comparisons
-- Break down complex concepts into simple steps
-- Provide context for "why" things are done a certain way
-` : ''}
-${experienceLevel === 'intermediate' ? `
-- Assume familiarity with common patterns
-- Focus on project-specific implementations
-- Explain trade-offs and alternatives
-- Connect concepts to similar patterns in other projects
-` : ''}
-${experienceLevel === 'advanced' ? `
-- Focus on architectural insights and design rationale
-- Analyze performance implications
-- Discuss scalability and maintainability
-- Compare with alternative approaches
-- Highlight advanced patterns and techniques
-` : ''}
-
-## Use TodoWrite throughout to track your progress:
-- Mark each phase as you complete it
-- Track individual tutorial generation
-- Show progress on reference materials
-
-Start by analyzing the codebase structure, then progressively build out the learning path.
-`;
-
-  console.log('🤖 Invoking Claude Agent...\n');
-
+async function main() {
   try {
-    for await (const message of query({
+    const startTime = Date.now();
+
+    // Execute the query
+    const result = query({
       prompt,
       options: {
-        cwd: resolve(codebasePath),
-        permissionMode: 'acceptEdits',
-        includePartialMessages: false,
+        cwd: targetDir,
+        allowedTools: [
+          "Bash",
+          "Read",
+          "Grep",
+          "Glob",
+          "WebSearch",
+          "Write"
+        ],
+        permissionMode: "bypassPermissions",
+        model: "claude-sonnet-4-5-20250929",
       },
-    })) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text') {
-            console.log(block.text);
+    });
+
+    // Process streaming results
+    let assistantMessages: string[] = [];
+
+    for await (const message of result) {
+      if (message.type === "assistant") {
+        // Extract text content from assistant messages
+        for (const block of message.message.content) {
+          if (block.type === "text") {
+            assistantMessages.push(block.text);
           }
         }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Learning path generated successfully!');
-          console.log(`\nSummary:`);
-          console.log(`- Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`- Turns: ${message.num_turns}`);
-          console.log(`- Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`- Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-          console.log(`\n📂 Check ${outputDir} for your learning path materials!`);
-        } else {
-          console.error('\n❌ Failed to generate learning path');
-          if (message.subtype === 'error_max_turns') {
-            console.error('Error: Maximum turns reached');
-          }
+      } else if (message.type === "result") {
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+        console.log();
+        console.log("=".repeat(50));
+        console.log("✅ Learning Path Generated Successfully!");
+        console.log("=".repeat(50));
+        console.log(`⏱️  Completed in ${duration}s`);
+        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
+        console.log(`🔄 Turns: ${message.num_turns}`);
+        console.log(`📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
+        console.log();
+
+        if (message.subtype === "success") {
+          console.log("📄 Summary:");
+          console.log(message.result);
+        } else if (message.subtype === "error_max_turns") {
+          console.error("⚠️  Warning: Reached maximum turns limit");
+        } else if (message.subtype === "error_during_execution") {
+          console.error("❌ Error occurred during execution");
         }
       }
     }
+
   } catch (error) {
-    console.error('\n❌ Error during learning path generation:', error);
+    console.error("❌ Error:", error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }
 
-// Parse command line arguments
-function parseArgs() {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    console.log(`
-Learning Path Generator Agent
-
-Usage: bun run agents/learning-path-generator.ts <path-to-codebase> [options]
-
-Arguments:
-  <path-to-codebase>        Path to the codebase to analyze (required)
-
-Options:
-  --feature <name>          Start from a specific feature/component
-  --level <level>           Developer experience level: beginner, intermediate, or advanced (default: intermediate)
-  --output <path>           Output directory for tutorials (default: ./learning-paths)
-  --format <format>         Output format: markdown, html, or json (default: markdown)
-  --help, -h               Show this help message
-
-Examples:
-  bun run agents/learning-path-generator.ts ./my-project
-  bun run agents/learning-path-generator.ts ./my-project --level beginner --feature authentication
-  bun run agents/learning-path-generator.ts ./my-project --output ./docs/tutorials --format html
-`);
-    process.exit(0);
-  }
-
-  const codebasePath = args[0];
-
-  if (!codebasePath) {
-    console.error('Error: Codebase path is required');
-    process.exit(1);
-  }
-
-  let feature: string | undefined;
-  let experienceLevel: 'beginner' | 'intermediate' | 'advanced' = 'intermediate';
-  let outputDir = './learning-paths';
-  let outputFormat: 'markdown' | 'html' | 'json' = 'markdown';
-
-  for (let i = 1; i < args.length; i += 2) {
-    const flag = args[i];
-    const value = args[i + 1];
-
-    if (!value) {
-      console.error(`Missing value for option: ${flag}`);
-      process.exit(1);
-    }
-
-    switch (flag) {
-      case '--feature':
-        feature = value;
-        break;
-      case '--level':
-        if (value !== 'beginner' && value !== 'intermediate' && value !== 'advanced') {
-          console.error(`Invalid level: ${value}. Must be beginner, intermediate, or advanced.`);
-          process.exit(1);
-        }
-        experienceLevel = value;
-        break;
-      case '--output':
-        outputDir = value;
-        break;
-      case '--format':
-        if (value !== 'markdown' && value !== 'html' && value !== 'json') {
-          console.error(`Invalid format: ${value}. Must be markdown, html, or json.`);
-          process.exit(1);
-        }
-        outputFormat = value;
-        break;
-      default:
-        console.error(`Unknown option: ${flag}`);
-        process.exit(1);
-    }
-  }
-
-  return {
-    codebasePath,
-    feature,
-    experienceLevel,
-    outputDir,
-    outputFormat,
-  };
-}
-
-// Main execution
-const options = parseArgs();
-generateLearningPath(options);
+main();
