@@ -1,0 +1,382 @@
+#!/usr/bin/env bun
+
+/**
+ * Release Gatekeeper Auditor
+ *
+ * A practical everyday agent that inspects a release candidate and assembles a
+ * comprehensive readiness scorecard before production rollout. It checks
+ * changelog coverage, CI health, configuration drift, feature flag posture, and
+ * dependency shifts so release managers can sign off with confidence.
+ *
+ * Usage:
+ *   bun run agents/release-gatekeeper-auditor.ts [options]
+ *
+ * Examples:
+ *   # Audit HEAD against origin/main and write report to release-audit.md
+ *   bun run agents/release-gatekeeper-auditor.ts --release HEAD --prev origin/main
+ *
+ *   # Provide release notes and incident logs for deeper context
+ *   bun run agents/release-gatekeeper-auditor.ts \
+ *     --release release/2024.02.0 \
+ *     --prev release/2024.01.1 \
+ *     --notes docs/release-notes/2024.02.0.md \
+ *     --changelog CHANGELOG.md \
+ *     --incident incidents/ \
+ *     --flags config/feature-flags \
+ *     --manifest infra/kubernetes/deploy.yaml
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+
+interface CliOptions {
+  releaseRef: string;
+  previousRef: string;
+  reportFile: string;
+  notesPath?: string;
+  changelogPath?: string;
+  featureFlagDirs: string[];
+  manifestPaths: string[];
+  incidentLogs: string[];
+  lookbackDays: number;
+  dryRunPlan: boolean;
+}
+
+function printHelp(): void {
+  console.log(`\n🚦 Release Gatekeeper Auditor\n\nUsage:\n  bun run agents/release-gatekeeper-auditor.ts [options]\n\nOptions:\n  --release <git-ref>        Release candidate ref or branch (default: HEAD)\n  --prev <git-ref>           Previous stable ref for comparison (default: origin/main)\n  --report <file>            Output markdown report path (default: release-gatekeeper-audit.md)\n  --notes <path>             Release notes draft to validate\n  --changelog <path>         Changelog file to cross-check\n  --flags <dir>              Directory with feature flag definitions (repeatable)\n  --manifest <file>          Runtime or infrastructure manifest to diff (repeatable)\n  --incident <path>          Incident or bug log file/dir to review (repeatable)\n  --lookback <days>          History window for issues & rollbacks (default: 14)\n  --dry-run                  Request explicit dry-run rehearsal recommendations\n  --help                     Show this message\n\nExamples:\n  bun run agents/release-gatekeeper-auditor.ts --release HEAD --prev origin/main\n  bun run agents/release-gatekeeper-auditor.ts --release v2.3.0 --prev v2.2.4 --notes notes.md\n`);
+}
+
+function expectValue(args: string[], index: number, flag: string): string {
+  const value = args[index];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`Missing value for ${flag}`);
+  }
+  return value;
+}
+
+function parseArgs(argv: string[]): CliOptions {
+  let releaseRef = 'HEAD';
+  let previousRef = 'origin/main';
+  let reportFile = 'release-gatekeeper-audit.md';
+  let notesPath: string | undefined;
+  let changelogPath: string | undefined;
+  const featureFlagDirs: string[] = [];
+  const manifestPaths: string[] = [];
+  const incidentLogs: string[] = [];
+  let lookbackDays = 14;
+  let dryRunPlan = false;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+
+    switch (arg) {
+      case '--help':
+        printHelp();
+        process.exit(0);
+      case '--release':
+        releaseRef = expectValue(argv, ++i, '--release');
+        break;
+      case '--prev':
+        previousRef = expectValue(argv, ++i, '--prev');
+        break;
+      case '--report':
+        reportFile = expectValue(argv, ++i, '--report');
+        break;
+      case '--notes':
+        notesPath = expectValue(argv, ++i, '--notes');
+        break;
+      case '--changelog':
+        changelogPath = expectValue(argv, ++i, '--changelog');
+        break;
+      case '--flags':
+        featureFlagDirs.push(expectValue(argv, ++i, '--flags'));
+        break;
+      case '--manifest':
+        manifestPaths.push(expectValue(argv, ++i, '--manifest'));
+        break;
+      case '--incident':
+        incidentLogs.push(expectValue(argv, ++i, '--incident'));
+        break;
+      case '--lookback': {
+        const rawValue = expectValue(argv, ++i, '--lookback');
+        const parsed = Number(rawValue);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          throw new Error('--lookback must be a positive number of days');
+        }
+        lookbackDays = Math.floor(parsed);
+        break;
+      }
+      case '--dry-run':
+        dryRunPlan = true;
+        break;
+      default:
+        if (arg.startsWith('--')) {
+          throw new Error(`Unknown flag: ${arg}`);
+        }
+        releaseRef = arg;
+    }
+  }
+
+  return {
+    releaseRef,
+    previousRef,
+    reportFile,
+    notesPath,
+    changelogPath,
+    featureFlagDirs,
+    manifestPaths,
+    incidentLogs,
+    lookbackDays,
+    dryRunPlan,
+  };
+}
+
+function formatPathList(label: string, items: string[]): string {
+  if (items.length === 0) {
+    return `${label}: none supplied`;
+  }
+  return `${label}:\n${items.map((item) => `- ${path.resolve(item)}`).join('\n')}`;
+}
+
+function validateHint(pathValue: string | undefined, description: string): string {
+  if (!pathValue) {
+    return `${description}: not provided`;
+  }
+  const fullPath = path.resolve(pathValue);
+  const exists = fs.existsSync(fullPath);
+  return `${description}: ${fullPath}${exists ? '' : ' (warning: missing)'}`;
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const options = parseArgs(argv);
+
+  console.log('🚦 Release Gatekeeper Auditor\n');
+  console.log(`📂 Repository: ${process.cwd()}`);
+  console.log(`🏷️  Release candidate ref: ${options.releaseRef}`);
+  console.log(`🪜 Previous stable ref: ${options.previousRef}`);
+  console.log(`🗓️  History lookback: ${options.lookbackDays} days`);
+  console.log(`📝 Report destination: ${options.reportFile}`);
+  if (options.dryRunPlan) {
+    console.log('🧪 Dry-run rehearsal recommendations requested');
+  }
+  console.log('');
+
+  const notesHint = validateHint(options.notesPath, 'Release notes');
+  const changelogHint = validateHint(options.changelogPath, 'Changelog');
+  const featureFlagHint = formatPathList('Feature flag sources', options.featureFlagDirs);
+  const manifestHint = formatPathList('Manifest files', options.manifestPaths);
+  const incidentsHint = formatPathList('Incident or bug logs', options.incidentLogs);
+
+  const dryRunDirective = options.dryRunPlan
+    ? 'Include a dedicated **Dry-Run Rehearsal Plan** section describing pre-release drills, owners, and expected outcomes.'
+    : 'Recommend dry-run steps inline only when high-risk components are detected.';
+
+  const prompt = `You are the Release Gatekeeper Auditor, a meticulous release manager bot hired to certify whether a build is safe to ship.
+
+## Release Context
+- Candidate ref: ${options.releaseRef}
+- Previous stable ref: ${options.previousRef}
+- History lookback: ${options.lookbackDays} days
+- ${notesHint}
+- ${changelogHint}
+- ${featureFlagHint}
+- ${manifestHint}
+- ${incidentsHint}
+- Working directory: ${process.cwd()}
+
+## Mission
+1. Build a changelog verification report: ensure release notes summarize every notable change since ${options.previousRef}, flag gaps or vague entries.
+2. Inspect CI state for ${options.releaseRef}: verify mandatory pipelines ran, highlight flaky reruns, list missing approvals or manual gates.
+3. Diff runtime config and infrastructure manifests to catch secrets, env vars, or capacity toggles that changed without sign-off.
+4. Analyze feature flag posture: find flags newly introduced, toggled, or stuck in partial rollout that could surprise operators.
+5. Compile dependency and binary deltas with vulnerability risk callouts.
+6. Correlate recent incidents, rollback notes, or high-priority bugs with touched modules to focus extra scrutiny.
+7. Produce a sign-off matrix assigning QA, infra, security, and product owners with their outstanding tasks.
+8. ${dryRunDirective}
+
+## Operating Guardrails
+- Use git commands to compare ${options.releaseRef} against ${options.previousRef} (log, diff, shortlog).
+- Prefer read-only inspections; never run deployment commands or mutate git history.
+- For each tool invocation, capture just enough output to justify findings.
+- When data is missing (file absent, command fails), record the gap instead of guessing.
+- Keep the report actionable and concise—release managers should act on it within minutes.
+
+## Deliverables
+Write a markdown report to \\"${path.resolve(options.reportFile)}\\" using the following outline:
+
+\`\`\`markdown
+# Release Gatekeeper Audit
+
+## TL;DR
+- **Readiness verdict**: [Ready | Needs Work | Blocked] (score /100)
+- **Biggest risks**:
+  - [...]
+  - [...]
+- **Immediate actions**:
+  - [...]
+  - [...]
+
+## Checklist Status
+| Area | Owner | Status | Evidence |
+| ---- | ----- | ------ | -------- |
+| Changelog |  |  |  |
+| CI Pipelines |  |  |  |
+| QA Sign-off |  |  |  |
+| Infra/Config |  |  |  |
+| Observability |  |  |  |
+
+## Change Summary
+- Commits since ${options.previousRef}: [count]
+- High-risk modules: [...]
+- Unlinked work items: [...]
+
+## CI & Quality Signals
+- ✅ Passing suites:
+- ⚠️ Flaky or skipped suites:
+- 🔴 Failures to resolve:
+- Test data / fixtures impacted:
+
+## Config & Infrastructure Diff
+- Env var changes:
+- Secrets / credentials touched:
+- Capacity or scaling tweaks:
+- Observability hook updates:
+
+## Feature Flag Review
+- New flags:
+- Flags exiting rollout:
+- Flags stuck in partial rollout:
+- Cleanup or documentation tasks:
+
+## Dependency & Binary Delta
+- Added/updated dependencies of note:
+- Vulnerability advisories to check:
+- Build artifacts updated:
+
+## Incident & Bug Watchlist
+- Related incidents in last ${options.lookbackDays} days:
+- Open P0/P1 bugs touching changed code:
+- Mitigation steps if risk recurs:
+
+## Sign-off Matrix
+| Function | Primary Owner | Backup | Outstanding Work |
+| -------- | ------------- | ------ | ---------------- |
+| QA |
+| Infra |
+| Security |
+| Product |
+| Support |
+
+## Communication Drafts
+- Release Slack / email snippet:
+- PagerDuty / statuspage note if rollback occurs:
+
+${options.dryRunPlan ? '## Dry-Run Rehearsal Plan\n- [Scenario] → [Owner] → [Target Date]\n- Success metrics:\n' : ''}## Next Steps & Follow-ups
+1. [Task → Owner → Due date]
+2. [Task → Owner → Due date]
+
+## Appendix
+- Key commands executed
+- Artifacts and logs collected
+\`\`\`
+
+If blockers or high-risk findings remain, capture them via the \`TodoWrite\` tool with priority cues.
+
+End the session by outputting a concise (<=4 sentences) readiness verdict recap for the terminal.
+`;
+
+  const sdkOptions: Options = {
+    cwd: process.cwd(),
+    permissionMode: 'bypassPermissions',
+    allowedTools: ['Bash', 'Read', 'Grep', 'Glob', 'Write', 'TodoWrite'],
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+    },
+    maxTurns: 70,
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            async (input: any) => {
+              if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+              switch (input.tool_name) {
+                case 'Bash': {
+                  const command = typeof input.tool_input?.command === 'string'
+                    ? input.tool_input.command
+                    : 'bash command';
+                  console.log(`🛠️  Running: ${command}`);
+                  break;
+                }
+                case 'Read':
+                  console.log('📖 Inspecting repository files');
+                  break;
+                case 'Write':
+                  console.log(`📝 Writing report to ${options.reportFile}`);
+                  break;
+                case 'TodoWrite':
+                  console.log('✅ Logging release follow-up tasks');
+                  break;
+                default:
+                  break;
+              }
+              return { continue: true };
+            },
+          ],
+        },
+      ],
+      PostToolUse: [
+        {
+          hooks: [
+            async (input: any) => {
+              if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+              if (input.tool_name === 'Write') {
+                console.log('📄 Report content appended');
+              }
+              if (input.tool_name === 'TodoWrite') {
+                console.log('🗂️  Follow-up checklist updated');
+              }
+              return { continue: true };
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  try {
+    for await (const message of query({ prompt, options: sdkOptions })) {
+      if (message.type === 'assistant') {
+        for (const content of message.message.content) {
+          if (content.type === 'text') {
+            const text = content.text.trim();
+            if (text.length > 0) {
+              console.log(text);
+            }
+          }
+        }
+      } else if (message.type === 'result') {
+        if (message.subtype === 'success') {
+          console.log('\n✅ Release audit session complete');
+          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
+          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
+          console.log(`🔢 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
+          console.log(`📄 Report saved to: ${options.reportFile}`);
+        } else {
+          console.error(`\n❌ Audit ended with subtype: ${message.subtype}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('\n❌ Error while running Release Gatekeeper Auditor:', error);
+    process.exit(1);
+  }
+}
+
+main().catch((error) => {
+  console.error('❌ Unhandled error in Release Gatekeeper Auditor:', error);
+  process.exit(1);
+});
