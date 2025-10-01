@@ -13,7 +13,7 @@ if (!prompt) {
     console.error('Error: Prompt is required as the first argument');
     process.exit(1);
 }
-console.log(`The prompt is: ${prompt}. API KEY: ${process.env.ZAI_API_KEY}`);
+
 const result = query({
     prompt,
     options: {
@@ -35,5 +35,3 @@ for await (const message of result) {
         }
     }
 }
-
-// Hello world
