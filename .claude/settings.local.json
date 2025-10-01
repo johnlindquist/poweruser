@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(bun run:*)",
+      "Bash(chmod:*)",
+      "Bash(awk:*)"
+    ]
+  },
   "hooks": {
     "SessionEnd": [
       {
@@ -10,11 +17,6 @@
           }
         ]
       }
-    ]
-  },
-  "permissions": {
-    "allow": [
-      "Bash(bun run:*)"
     ]
   }
 }
