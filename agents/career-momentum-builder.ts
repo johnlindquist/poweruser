@@ -188,151 +188,159 @@ Remember: Your goal is to transform "I don't know if I can do this" into "I have
 function buildPrompt(options: CareerBuilderOptions): string {
   const { jobUrl, githubUsername, targetRole, resumePath, outputDir } = options;
 
-  let prompt = `I need help accelerating my career as a developer. `;
-
-  if (targetRole) {
-    prompt += `My goal is to become a ${targetRole}. `;
-  } else {
-    prompt += `I want to advance my career but I'm not sure what role to target. `;
+  return `I need help accelerating my career as a developer. ${
+    targetRole
+      ? `My goal is to become a ${targetRole}.`
+      : `I want to advance my career but I'm not sure what role to target.`
   }
 
-  prompt += `\n\nPlease help me build career momentum by:\n\n`;
+Please help me build career momentum by:
 
-  // Phase 1: Assessment
-  prompt += `## Phase 1: Assess My Current State\n\n`;
+## Phase 1: Assess My Current State
 
-  if (githubUsername) {
-    prompt += `1. Analyze my GitHub profile (@${githubUsername}) using WebFetch or Bash with gh CLI:\n`;
-    prompt += `   - Review my repositories to understand my tech stack and experience\n`;
-    prompt += `   - Assess code quality, project complexity, and contribution patterns\n`;
-    prompt += `   - Identify my strongest skills and unique differentiators\n`;
-    prompt += `   - Suggest specific improvements to make my profile more impressive\n\n`;
-  }
+${
+  githubUsername
+    ? `1. Analyze my GitHub profile (@${githubUsername}) using WebFetch or Bash with gh CLI:
+   - Review my repositories to understand my tech stack and experience
+   - Assess code quality, project complexity, and contribution patterns
+   - Identify my strongest skills and unique differentiators
+   - Suggest specific improvements to make my profile more impressive
 
-  if (resumePath) {
-    prompt += `2. Review my resume at "${resumePath}":\n`;
-    prompt += `   - Identify strengths and areas that need better highlighting\n`;
-    prompt += `   - Suggest specific improvements for impact and clarity\n`;
-    prompt += `   - Recommend what to add/remove/reframe\n\n`;
-  }
+`
+    : ''
+}
+${
+  resumePath
+    ? `2. Review my resume at "${resumePath}":
+   - Identify strengths and areas that need better highlighting
+   - Suggest specific improvements for impact and clarity
+   - Recommend what to add/remove/reframe
 
-  if (!githubUsername && !resumePath) {
-    prompt += `1. Since I haven't provided a GitHub username or resume, guide me on:\n`;
-    prompt += `   - What I should include in my GitHub profile\n`;
-    prompt += `   - How to structure an impressive developer portfolio\n`;
-    prompt += `   - Key projects that would demonstrate my capabilities\n\n`;
-  }
+`
+    : ''
+}
+${
+  !githubUsername && !resumePath
+    ? `1. Since I haven't provided a GitHub username or resume, guide me on:
+   - What I should include in my GitHub profile
+   - How to structure an impressive developer portfolio
+   - Key projects that would demonstrate my capabilities
 
-  // Phase 2: Target Role Analysis
-  prompt += `## Phase 2: Analyze Target Role Requirements\n\n`;
+`
+    : ''
+}
+## Phase 2: Analyze Target Role Requirements
 
-  if (jobUrl) {
-    prompt += `1. Analyze the job description at ${jobUrl} using WebFetch:\n`;
-    prompt += `   - Extract all required and preferred skills\n`;
-    prompt += `   - Identify must-have vs nice-to-have qualifications\n`;
-    prompt += `   - Understand what the company values in candidates\n\n`;
-  }
+${
+  jobUrl
+    ? `1. Analyze the job description at ${jobUrl} using WebFetch:
+   - Extract all required and preferred skills
+   - Identify must-have vs nice-to-have qualifications
+   - Understand what the company values in candidates
 
-  if (targetRole) {
-    prompt += `2. Research the ${targetRole} role using WebSearch:\n`;
-    prompt += `   - Find 3-5 real job postings for this role\n`;
-    prompt += `   - Identify common required skills and technologies\n`;
-    prompt += `   - Understand typical experience requirements\n`;
-    prompt += `   - Research salary ranges and career progression paths\n\n`;
-  } else {
-    prompt += `2. Help me identify suitable target roles based on my current skills:\n`;
-    prompt += `   - Suggest 2-3 realistic next-step roles\n`;
-    prompt += `   - Explain why each role would be a good fit\n`;
-    prompt += `   - Provide market demand and salary information\n\n`;
-  }
+`
+    : ''
+}
+${
+  targetRole
+    ? `2. Research the ${targetRole} role using WebSearch:
+   - Find 3-5 real job postings for this role
+   - Identify common required skills and technologies
+   - Understand typical experience requirements
+   - Research salary ranges and career progression paths
 
-  // Phase 3: Skill Gap Analysis
-  prompt += `## Phase 3: Create My Skill Development Plan\n\n`;
-  prompt += `1. Compare my current skills with target role requirements\n`;
-  prompt += `2. Create a prioritized list of skills to develop:\n`;
-  prompt += `   - Categorize as: Critical (must learn), Important (should learn), Bonus (nice to have)\n`;
-  prompt += `   - Estimate time needed to reach proficiency for each\n`;
-  prompt += `   - Provide specific learning resources (courses, docs, tutorials)\n`;
-  prompt += `3. Identify skills I already have that can be better showcased\n\n`;
+`
+    : `2. Help me identify suitable target roles based on my current skills:
+   - Suggest 2-3 realistic next-step roles
+   - Explain why each role would be a good fit
+   - Provide market demand and salary information
 
-  // Phase 4: Portfolio Projects
-  prompt += `## Phase 4: Design Impressive Portfolio Projects\n\n`;
-  prompt += `1. Generate 2-3 portfolio project ideas that:\n`;
-  prompt += `   - Demonstrate skills required for my target role\n`;
-  prompt += `   - Solve real-world problems (not just tutorials)\n`;
-  prompt += `   - Are impressive but achievable in 2-4 weeks each\n`;
-  prompt += `   - Would make great talking points in interviews\n`;
-  prompt += `2. For each project, provide:\n`;
-  prompt += `   - Complete project specification\n`;
-  prompt += `   - Recommended tech stack with justification\n`;
-  prompt += `   - Implementation roadmap broken into phases\n`;
-  prompt += `   - How to showcase it effectively\n\n`;
+`
+}
+## Phase 3: Create My Skill Development Plan
 
-  // Phase 5: Content Strategy
-  prompt += `## Phase 5: Build My Personal Brand\n\n`;
-  prompt += `1. Create a content strategy for technical blog posts:\n`;
-  prompt += `   - Suggest 5 blog post topics based on my skills and projects\n`;
-  prompt += `   - Include SEO-friendly titles and key points to cover\n`;
-  prompt += `   - Recommend platforms (Dev.to, Medium, personal blog)\n`;
-  prompt += `2. Plan social media content:\n`;
-  prompt += `   - Weekly themes for sharing progress and insights\n`;
-  prompt += `   - How to engage with developer community effectively\n\n`;
+1. Compare my current skills with target role requirements
+2. Create a prioritized list of skills to develop:
+   - Categorize as: Critical (must learn), Important (should learn), Bonus (nice to have)
+   - Estimate time needed to reach proficiency for each
+   - Provide specific learning resources (courses, docs, tutorials)
+3. Identify skills I already have that can be better showcased
 
-  // Phase 6: Strategic Open Source
-  prompt += `## Phase 6: Open Source Contribution Strategy\n\n`;
-  prompt += `1. Identify 2-3 open source projects that:\n`;
-  prompt += `   - Align with my target role requirements\n`;
-  prompt += `   - Have active maintainers and welcoming communities\n`;
-  prompt += `   - Would look impressive on my resume\n`;
-  prompt += `2. Find specific issues I could tackle in each project\n`;
-  prompt += `3. Explain how these contributions advance my career goals\n\n`;
+## Phase 4: Design Impressive Portfolio Projects
 
-  // Phase 7: 90-Day Roadmap
-  prompt += `## Phase 7: Create My 90-Day Action Plan\n\n`;
-  prompt += `1. Build a detailed week-by-week roadmap with:\n`;
-  prompt += `   - Specific milestones for each week\n`;
-  prompt += `   - Learning activities with time estimates\n`;
-  prompt += `   - Portfolio project sprints with deliverables\n`;
-  prompt += `   - Content creation schedule\n`;
-  prompt += `   - Networking and community engagement activities\n`;
-  prompt += `2. Include daily habits to build momentum:\n`;
-  prompt += `   - Morning routine for learning\n`;
-  prompt += `   - Evening reflection and progress tracking\n`;
-  prompt += `3. Set up progress checkpoints:\n`;
-  prompt += `   - 30-day: First portfolio project complete\n`;
-  prompt += `   - 60-day: Second portfolio project + 2 blog posts\n`;
-  prompt += `   - 90-day: Ready to actively apply for target roles\n\n`;
+1. Generate 2-3 portfolio project ideas that:
+   - Demonstrate skills required for my target role
+   - Solve real-world problems (not just tutorials)
+   - Are impressive but achievable in 2-4 weeks each
+   - Would make great talking points in interviews
+2. For each project, provide:
+   - Complete project specification
+   - Recommended tech stack with justification
+   - Implementation roadmap broken into phases
+   - How to showcase it effectively
 
-  // Phase 8: Overcoming Challenges
-  prompt += `## Phase 8: Build My Confidence\n\n`;
-  prompt += `1. Document evidence of my growing skills:\n`;
-  prompt += `   - Skills I already have that demonstrate my capabilities\n`;
-  prompt += `   - Projects that show my problem-solving ability\n`;
-  prompt += `   - Progress I've made in my career so far\n`;
-  prompt += `2. Reframe imposter syndrome:\n`;
-  prompt += `   - Realistic expectations for my experience level\n`;
-  prompt += `   - How growth areas are opportunities, not failures\n`;
-  prompt += `   - Evidence that I'm on the right track\n\n`;
+## Phase 5: Build My Personal Brand
 
-  // Output instructions
-  prompt += `## Output All Plans as Markdown Files\n\n`;
-  prompt += `Save all analysis and recommendations in the "${outputDir}/" directory:\n`;
-  prompt += `- career-assessment.md\n`;
-  prompt += `- skill-gap-analysis.md\n`;
-  prompt += `- portfolio-project-ideas.md\n`;
-  prompt += `- learning-resources.md\n`;
-  prompt += `- content-strategy.md\n`;
-  prompt += `- networking-plan.md\n`;
-  prompt += `- 90-day-roadmap.md\n`;
-  prompt += `- resume-optimization.md (if resume provided)\n`;
-  prompt += `- interview-prep.md\n`;
-  prompt += `- momentum-tracker.md\n`;
-  prompt += `- README.md (overview with quick-start guide)\n\n`;
+1. Create a content strategy for technical blog posts:
+   - Suggest 5 blog post topics based on my skills and projects
+   - Include SEO-friendly titles and key points to cover
+   - Recommend platforms (Dev.to, Medium, personal blog)
+2. Plan social media content:
+   - Weekly themes for sharing progress and insights
+   - How to engage with developer community effectively
 
-  prompt += `Use TodoWrite to track your progress through each phase. `;
-  prompt += `Be encouraging, specific, and actionable. Focus on building momentum with achievable goals.`;
+## Phase 6: Open Source Contribution Strategy
 
-  return prompt;
+1. Identify 2-3 open source projects that:
+   - Align with my target role requirements
+   - Have active maintainers and welcoming communities
+   - Would look impressive on my resume
+2. Find specific issues I could tackle in each project
+3. Explain how these contributions advance my career goals
+
+## Phase 7: Create My 90-Day Action Plan
+
+1. Build a detailed week-by-week roadmap with:
+   - Specific milestones for each week
+   - Learning activities with time estimates
+   - Portfolio project sprints with deliverables
+   - Content creation schedule
+   - Networking and community engagement activities
+2. Include daily habits to build momentum:
+   - Morning routine for learning
+   - Evening reflection and progress tracking
+3. Set up progress checkpoints:
+   - 30-day: First portfolio project complete
+   - 60-day: Second portfolio project + 2 blog posts
+   - 90-day: Ready to actively apply for target roles
+
+## Phase 8: Build My Confidence
+
+1. Document evidence of my growing skills:
+   - Skills I already have that demonstrate my capabilities
+   - Projects that show my problem-solving ability
+   - Progress I've made in my career so far
+2. Reframe imposter syndrome:
+   - Realistic expectations for my experience level
+   - How growth areas are opportunities, not failures
+   - Evidence that I'm on the right track
+
+## Output All Plans as Markdown Files
+
+Save all analysis and recommendations in the "${outputDir}/" directory:
+- career-assessment.md
+- skill-gap-analysis.md
+- portfolio-project-ideas.md
+- learning-resources.md
+- content-strategy.md
+- networking-plan.md
+- 90-day-roadmap.md
+- resume-optimization.md (if resume provided)
+- interview-prep.md
+- momentum-tracker.md
+- README.md (overview with quick-start guide)
+
+Use TodoWrite to track your progress through each phase. Be encouraging, specific, and actionable. Focus on building momentum with achievable goals.`;
 }
 
 // Parse command line arguments

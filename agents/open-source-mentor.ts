@@ -106,11 +106,15 @@ Remember: Your goal is to empower developers to contribute confidently and meani
 function buildPrompt(options: MentorOptions): string {
   const { repository, issueNumber, githubUsername, generateRoadmap } = options;
 
-  let prompt = `I want to contribute to the ${repository} open source project. `;
+  return `I want to contribute to the ${repository} open source project. ${
+    issueNumber
+      ? `Specifically, I'm interested in working on issue #${issueNumber}.`
+      : `I'm not sure where to start.`
+  }
 
-  if (issueNumber) {
-    prompt += `Specifically, I'm interested in working on issue #${issueNumber}. `;
-    prompt += `\n\nPlease:
+Please:${
+    issueNumber
+      ? `
 1. Fetch the issue details using gh CLI or WebFetch
 2. Analyze the repository structure to understand where the change should be made
 3. Identify related code patterns and similar implementations
@@ -122,10 +126,8 @@ function buildPrompt(options: MentorOptions): string {
 5. Draft a professional PR description following the project's conventions
 6. Provide tips for engaging with maintainers during code review
 
-Focus on making this approachable and building my confidence to actually submit the PR.`;
-  } else {
-    prompt += `I'm not sure where to start. `;
-    prompt += `\n\nPlease:
+Focus on making this approachable and building my confidence to actually submit the PR.`
+      : `
 1. Analyze the repository using gh CLI and WebFetch to understand:
    - Project structure and tech stack
    - Contribution guidelines and process
@@ -134,24 +136,24 @@ Focus on making this approachable and building my confidence to actually submit 
    - Full context about what needs to be done and why it matters
    - Estimated difficulty and time investment
    - What I'll learn from each contribution
-3. For the most promising opportunity, provide a detailed getting-started guide`;
-
-    if (githubUsername) {
-      prompt += `\n4. Analyze my GitHub profile (${githubUsername}) and suggest which contribution would best complement my existing skills and experience`;
-    }
-
-    if (generateRoadmap) {
-      prompt += `\n${githubUsername ? '5' : '4'}. Create a 90-day roadmap for going from first-time contributor to recognized contributor in this project, including:
+3. For the most promising opportunity, provide a detailed getting-started guide${
+  githubUsername
+    ? `
+4. Analyze my GitHub profile (${githubUsername}) and suggest which contribution would best complement my existing skills and experience`
+    : ''
+}${
+  generateRoadmap
+    ? `
+${githubUsername ? '5' : '4'}. Create a 90-day roadmap for going from first-time contributor to recognized contributor in this project, including:
    - Milestones and suggested contributions at each stage
    - Skills to develop along the way
    - Community engagement strategies (discussions, issues, reviews)
-   - How to build relationships with maintainers`;
-    }
+   - How to build relationships with maintainers`
+    : ''
+}`
   }
 
-  prompt += `\n\nGenerate all guides as markdown files in a './contribution-guides/' directory for easy reference.`;
-
-  return prompt;
+Generate all guides as markdown files in a './contribution-guides/' directory for easy reference.`;
 }
 
 // CLI Interface

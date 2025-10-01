@@ -27,22 +27,59 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const args = process.argv.slice(2);
+type ArgValue = string | boolean;
+interface ParsedArgs {
+  flags: Record<string, ArgValue>;
+  positionals: string[];
+}
+
+function parseArgs(args: string[]): ParsedArgs {
+  const flags: Record<string, ArgValue> = {};
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg) continue;
+
+    if (arg.startsWith('--')) {
+      const [key, value] = arg.slice(2).split('=');
+      if (key) {
+        if (value !== undefined) {
+          flags[key] = value;
+        } else {
+          const nextArg = args[i + 1];
+          if (nextArg && !nextArg.startsWith('-')) {
+            flags[key] = nextArg;
+            i++;
+          } else {
+            flags[key] = true;
+          }
+        }
+      }
+    } else if (arg.startsWith('-')) {
+      const key = arg.slice(1);
+      if (key) {
+        flags[key] = true;
+      }
+    } else {
+      positionals.push(arg);
+    }
+  }
+
+  return { flags, positionals };
+}
+
+const { flags, positionals } = parseArgs(process.argv.slice(2));
+
+const PROJECT_PATH = positionals[0] || process.cwd();
 
 // Parse CLI arguments
-const WCAG_LEVEL = args.includes('--standard')
-  ? args[args.indexOf('--standard') + 1]?.toUpperCase() || 'AA'
-  : 'AA';
-const AUTO_FIX = args.includes('--fix');
-const OUTPUT_FILE = args.includes('--output')
-  ? args[args.indexOf('--output') + 1] || 'a11y-report.md'
-  : 'a11y-report.md';
-const FRAMEWORK = args.includes('--framework')
-  ? args[args.indexOf('--framework') + 1]?.toLowerCase()
-  : 'auto';
+const WCAG_LEVEL = (flags.standard as string)?.toUpperCase() || 'AA';
+const AUTO_FIX = !!flags.fix;
+const OUTPUT_FILE = (flags.output as string) || 'a11y-report.md';
+const FRAMEWORK = (flags.framework as string)?.toLowerCase() || 'auto';
 
-if (args.includes('--help') || args.includes('-h')) {
+if (flags.help || flags.h) {
   console.log(`
 🌐 Accessibility Audit Helper
 

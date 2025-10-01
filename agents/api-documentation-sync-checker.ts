@@ -16,11 +16,53 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const AUTO_UPDATE = process.argv.includes('--auto-update');
-const OUTPUT_FILE = process.argv.includes('--output')
-  ? process.argv[process.argv.indexOf('--output') + 1] || 'api-sync-report.md'
-  : 'api-sync-report.md';
+type ArgValue = string | boolean;
+interface ParsedArgs {
+  flags: Record<string, ArgValue>;
+  positionals: string[];
+}
+
+function parseArgs(args: string[]): ParsedArgs {
+  const flags: Record<string, ArgValue> = {};
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg) continue;
+
+    if (arg.startsWith('--')) {
+      const [key, value] = arg.slice(2).split('=');
+      if (key) {
+        if (value !== undefined) {
+          flags[key] = value;
+        } else {
+          const nextArg = args[i + 1];
+          if (nextArg && !nextArg.startsWith('-')) {
+            flags[key] = nextArg;
+            i++;
+          } else {
+            flags[key] = true;
+          }
+        }
+      }
+    } else if (arg.startsWith('-')) {
+      const key = arg.slice(1);
+      if (key) {
+        flags[key] = true;
+      }
+    } else {
+      positionals.push(arg);
+    }
+  }
+
+  return { flags, positionals };
+}
+
+const { flags, positionals } = parseArgs(process.argv.slice(2));
+
+const PROJECT_PATH = positionals[0] || process.cwd();
+const AUTO_UPDATE = !!flags['auto-update'];
+const OUTPUT_FILE = (flags.output as string) || 'api-sync-report.md';
 
 async function main() {
   console.log('📚 API Documentation Sync Checker');

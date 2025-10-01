@@ -230,130 +230,100 @@ Remember: Your goal is to make complex code feel like an adventure story - excit
 function buildPrompt(options: StorytellerOptions): string {
   const { feature, entryPoint, outputDir, format } = options;
 
-  let prompt = `I need you to transform my code into an engaging story that makes it easy to understand. `;
-
-  if (feature) {
-    prompt += `I want to tell the story of how the "${feature}" feature works. `;
-  } else {
-    prompt += `Help me understand the main flows in this codebase by telling their stories. `;
-  }
-
-  prompt += `\n\n## Your Mission\n\n`;
-
-  // Phase 1: Exploration
-  prompt += `### Phase 1: Explore and Understand\n\n`;
-
-  if (entryPoint) {
-    prompt += `1. Start at the entry point: "${entryPoint}"\n`;
-    prompt += `   - Read this file to understand the starting point\n`;
-    prompt += `   - Identify what triggers this code (API endpoint, event handler, etc.)\n`;
-    prompt += `   - Trace the execution flow from here\n\n`;
-  } else {
-    prompt += `1. Discover the main entry points:\n`;
-    prompt += `   - Use Glob to find route definitions, controllers, handlers\n`;
-    prompt += `   - Use Grep to search for common patterns (app.get, @Route, etc.)\n`;
-    prompt += `   - Identify the most important flows to document\n\n`;
-  }
-
-  if (feature) {
-    prompt += `2. Find all code related to "${feature}":\n`;
-    prompt += `   - Use Grep to search for functions, classes, files related to this feature\n`;
-    prompt += `   - Map out which files are involved\n`;
-    prompt += `   - Understand how they connect to each other\n\n`;
-  }
-
-  prompt += `3. Trace the execution flow:\n`;
-  prompt += `   - Follow function calls from start to finish\n`;
-  prompt += `   - Identify key decision points and branches\n`;
-  prompt += `   - Track how data flows and transforms\n`;
-  prompt += `   - Note error handling and validation logic\n\n`;
-
-  prompt += `4. Identify the "story elements":\n`;
-  prompt += `   - **Protagonists**: Main functions/classes driving the action\n`;
-  prompt += `   - **Setting**: Architecture, tech stack, environment\n`;
-  prompt += `   - **Plot Points**: Critical decisions, validations, transformations\n`;
-  prompt += `   - **Conflicts**: Error cases, edge cases, validations\n`;
-  prompt += `   - **Resolution**: Success outcomes and return values\n\n`;
-
-  // Phase 2: Story Creation
-  prompt += `### Phase 2: Craft the Story\n\n`;
-
-  if (format === 'narrative' || format === 'both') {
-    prompt += `1. Write the narrative story:\n`;
-    prompt += `   - **Opening**: Set the scene - what triggers this flow?\n`;
-    prompt += `     Example: "When a user clicks 'Login', an authentication journey begins..."\n`;
-    prompt += `   - **Journey**: Follow the flow step by step with engaging descriptions\n`;
-    prompt += `     Use active voice, vivid language, and explain WHY things happen\n`;
-    prompt += `   - **Decision Points**: Highlight critical moments and branches\n`;
-    prompt += `     Explain what the code is checking and why it matters\n`;
-    prompt += `   - **Resolution**: Show all possible endings (success, errors, edge cases)\n`;
-    prompt += `   - Include code snippets for key moments (5-10 most important lines)\n`;
-    prompt += `   - Use analogies to explain complex concepts\n\n`;
-  }
-
-  if (format === 'journey-map' || format === 'both') {
-    prompt += `2. Create visual journey maps:\n`;
-    prompt += `   - Build sequence diagrams (using mermaid syntax) showing:\n`;
-    prompt += `     * Component interactions\n`;
-    prompt += `     * API calls between services\n`;
-    prompt += `     * Database queries\n`;
-    prompt += `   - Create flowcharts showing:\n`;
-    prompt += `     * Decision trees and branching logic\n`;
-    prompt += `     * Error handling paths\n`;
-    prompt += `     * Data transformations\n`;
-    prompt += `   - Add annotations in plain English for each step\n\n`;
-  }
-
-  // Phase 3: Supporting Documentation
-  prompt += `### Phase 3: Create Supporting Documents\n\n`;
-
-  prompt += `1. Cast of Characters:\n`;
-  prompt += `   - List all key functions/classes involved\n`;
-  prompt += `   - Describe their role in the story\n`;
-  prompt += `   - Show their signatures and file locations\n`;
-  prompt += `   - Map their dependencies and relationships\n\n`;
-
-  prompt += `2. Plot Points Breakdown:\n`;
-  prompt += `   - Document each critical decision point\n`;
-  prompt += `   - Explain validation and error handling logic\n`;
-  prompt += `   - Note performance considerations\n`;
-  prompt += `   - Highlight security checks\n\n`;
-
-  prompt += `3. Onboarding Guide:\n`;
-  prompt += `   - Where should new developers start reading?\n`;
-  prompt += `   - What are the most important files?\n`;
-  prompt += `   - What patterns are used throughout?\n`;
-  prompt += `   - How can someone extend or modify this feature?\n\n`;
-
-  // Output Instructions
-  prompt += `### Output Instructions\n\n`;
-  prompt += `Save all documentation in the "${outputDir}/" directory:\n\n`;
-
   const featureName = feature ? feature.toLowerCase().replace(/\s+/g, '-') : 'main-flow';
 
-  if (format === 'narrative' || format === 'both') {
-    prompt += `- ${featureName}-story.md (the main narrative)\n`;
+  return `I need you to transform my code into an engaging story that makes it easy to understand. ${
+    feature
+      ? `I want to tell the story of how the "${feature}" feature works.`
+      : `Help me understand the main flows in this codebase by telling their stories.`
   }
-  if (format === 'journey-map' || format === 'both') {
-    prompt += `- ${featureName}-journey-map.md (visual diagrams)\n`;
-  }
-  prompt += `- ${featureName}-cast-of-characters.md (reference guide)\n`;
-  prompt += `- ${featureName}-plot-points.md (critical moments)\n`;
-  prompt += `- onboarding-guide.md (quick start for newcomers)\n`;
-  prompt += `- README.md (overview with table of contents)\n\n`;
 
-  prompt += `## Writing Style\n\n`;
-  prompt += `- Write like you're telling a friend about something fascinating\n`;
-  prompt += `- Use analogies to explain complex concepts\n`;
-  prompt += `- Be technically accurate but engaging\n`;
-  prompt += `- Include visual elements (diagrams, code blocks, emojis)\n`;
-  prompt += `- Cover happy paths, errors, and edge cases\n`;
-  prompt += `- Make it feel like an adventure, not a technical manual\n\n`;
+## Your Mission
 
-  prompt += `Use TodoWrite to track your progress through exploration and documentation. `;
-  prompt += `Transform this code into a story that makes developers excited to dive in!`;
+### Phase 1: Explore and Understand
 
-  return prompt;
+${
+  entryPoint
+    ? `1. Start at the entry point: "${entryPoint}"\n   - Read this file to understand the starting point\n   - Identify what triggers this code (API endpoint, event handler, etc.)\n   - Trace the execution flow from here\n\n`
+    : `1. Discover the main entry points:\n   - Use Glob to find route definitions, controllers, handlers\n   - Use Grep to search for common patterns (app.get, @Route, etc.)\n   - Identify the most important flows to document\n\n`
+}
+${
+  feature
+    ? `2. Find all code related to "${feature}":\n   - Use Grep to search for functions, classes, files related to this feature\n   - Map out which files are involved\n   - Understand how they connect to each other\n\n`
+    : ''
+}
+3. Trace the execution flow:
+   - Follow function calls from start to finish
+   - Identify key decision points and branches
+   - Track how data flows and transforms
+   - Note error handling and validation logic
+
+4. Identify the "story elements":
+   - **Protagonists**: Main functions/classes driving the action
+   - **Setting**: Architecture, tech stack, environment
+   - **Plot Points**: Critical decisions, validations, transformations
+   - **Conflicts**: Error cases, edge cases, validations
+   - **Resolution**: Success outcomes and return values
+
+### Phase 2: Craft the Story
+
+${
+  format === 'narrative' || format === 'both'
+    ? `1. Write the narrative story:\n   - **Opening**: Set the scene - what triggers this flow?\n     Example: "When a user clicks 'Login', an authentication journey begins..."\n   - **Journey**: Follow the flow step by step with engaging descriptions\n     Use active voice, vivid language, and explain WHY things happen\n   - **Decision Points**: Highlight critical moments and branches\n     Explain what the code is checking and why it matters\n   - **Resolution**: Show all possible endings (success, errors, edge cases)\n   - Include code snippets for key moments (5-10 most important lines)\n   - Use analogies to explain complex concepts\n\n`
+    : ''
+}
+${
+  format === 'journey-map' || format === 'both'
+    ? `2. Create visual journey maps:\n   - Build sequence diagrams (using mermaid syntax) showing:\n     * Component interactions\n     * API calls between services\n     * Database queries\n   - Create flowcharts showing:\n     * Decision trees and branching logic\n     * Error handling paths\n     * Data transformations\n   - Add annotations in plain English for each step\n\n`
+    : ''
+}
+### Phase 3: Create Supporting Documents
+
+1. Cast of Characters:
+   - List all key functions/classes involved
+   - Describe their role in the story
+   - Show their signatures and file locations
+   - Map their dependencies and relationships
+
+2. Plot Points Breakdown:
+   - Document each critical decision point
+   - Explain validation and error handling logic
+   - Note performance considerations
+   - Highlight security checks
+
+3. Onboarding Guide:
+   - Where should new developers start reading?
+   - What are the most important files?
+   - What patterns are used throughout?
+   - How can someone extend or modify this feature?
+
+### Output Instructions
+
+Save all documentation in the "${outputDir}/" directory:
+
+${
+  format === 'narrative' || format === 'both'
+    ? `- ${featureName}-story.md (the main narrative)\n`
+    : ''
+}${
+  format === 'journey-map' || format === 'both'
+    ? `- ${featureName}-journey-map.md (visual diagrams)\n`
+    : ''
+}- ${featureName}-cast-of-characters.md (reference guide)
+- ${featureName}-plot-points.md (critical moments)
+- onboarding-guide.md (quick start for newcomers)
+- README.md (overview with table of contents)
+
+## Writing Style
+
+- Write like you're telling a friend about something fascinating
+- Use analogies to explain complex concepts
+- Be technically accurate but engaging
+- Include visual elements (diagrams, code blocks, emojis)
+- Cover happy paths, errors, and edge cases
+- Make it feel like an adventure, not a technical manual
+
+Use TodoWrite to track your progress through exploration and documentation. Transform this code into a story that makes developers excited to dive in!`;
 }
 
 // Parse command line arguments
