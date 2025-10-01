@@ -74,7 +74,11 @@ function parseArgs(argv: string[]): IntegrationSeedOptions | null {
   };
 
   for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
+    const current = argv[i];
+    if (typeof current !== 'string') {
+      continue;
+    }
+    const arg = current;
 
     if (arg === '--help' || arg === '-h') {
       showHelp();
@@ -221,7 +225,7 @@ Your mission: transform recent defect signals into a deterministic integration d
 
 3. **Seed Kit Architecture**
    - Design a modular TypeScript seed toolkit and write it to "${seedScriptPath}" using the \`Write\` tool.
-   - The toolkit should export a `buildIntegrationSeedPlan()` helper that:
+   - The toolkit should export a helper named buildIntegrationSeedPlan() that:
      * Outlines ordered phases (reset, core data, edge cases, queues, ${includeThirdPartyMocks ? 'third-party mocks, ' : ''}post-checks).
      * Provides idempotent operations (truncate/insert, upserts, queue enqueue stubs).
      * Documents required environment variables and safety guards.
