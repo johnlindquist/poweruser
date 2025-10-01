@@ -22,53 +22,18 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { parseArgs } from 'util';
 
-type ArgValue = string | boolean;
-interface ParsedArgs {
-  flags: Record<string, ArgValue>;
-  positionals: string[];
-}
-
-function parseArgs(args: string[]): ParsedArgs {
-  const flags: Record<string, ArgValue> = {};
-  const positionals: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg) continue;
-
-    if (arg.startsWith('--')) {
-      const [key, value] = arg.slice(2).split('=');
-      if (key) {
-        if (value !== undefined) {
-          flags[key] = value;
-        } else {
-          const nextArg = args[i + 1];
-          if (nextArg && !nextArg.startsWith('-')) {
-            flags[key] = nextArg;
-            i++;
-          } else {
-            flags[key] = true;
-          }
-        }
-      }
-    } else if (arg.startsWith('-')) {
-      const key = arg.slice(1);
-      if (key) {
-        flags[key] = true;
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-
-  return { flags, positionals };
-}
-
-const { flags, positionals } = parseArgs(process.argv.slice(2));
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    'base-branch': { type: 'string', default: 'main' },
+  },
+  allowPositionals: true,
+});
 
 const apiPath = positionals[0] || "src";
-const baseBranch = (flags['base-branch'] as string) || "main";
+const baseBranch = values['base-branch'] as string;
 
 const systemPrompt = `You are an API Contract Validator agent. Your mission is to prevent breaking API changes by thoroughly analyzing API contracts and their changes.
 

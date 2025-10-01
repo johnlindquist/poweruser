@@ -27,6 +27,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolve } from 'path';
+import { parseArgs } from 'util';
 
 interface ChangelogOptions {
   from?: string;
@@ -36,67 +37,32 @@ interface ChangelogOptions {
   update: boolean;
 }
 
-function parseArgs(): ChangelogOptions {
-  const args = process.argv.slice(2);
-  const options: ChangelogOptions = {
-    to: 'HEAD',
-    format: 'keep-a-changelog',
-    output: 'CHANGELOG-new.md',
-    update: false,
-  };
+function parseArgsFromArgv(): ChangelogOptions {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      from: { type: 'string' },
+      to: { type: 'string', default: 'HEAD' },
+      format: { type: 'string', default: 'keep-a-changelog' },
+      output: { type: 'string', default: 'CHANGELOG-new.md' },
+      update: { type: 'boolean', default: false },
+    },
+    strict: true,
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '--from':
-        i++;
-        if (i >= args.length || !args[i]) {
-          console.error('--from requires a value');
-          process.exit(1);
-        }
-        options.from = args[i]!;
-        break;
-      case '--to':
-        i++;
-        if (i >= args.length || !args[i]) {
-          console.error('--to requires a value');
-          process.exit(1);
-        }
-        options.to = args[i]!;
-        break;
-      case '--format':
-        i++;
-        if (i >= args.length || !args[i]) {
-          console.error('--format requires a value');
-          process.exit(1);
-        }
-        options.format = args[i]! as ChangelogOptions['format'];
-        break;
-      case '--output':
-        i++;
-        if (i >= args.length || !args[i]) {
-          console.error('--output requires a value');
-          process.exit(1);
-        }
-        options.output = args[i]!;
-        break;
-      case '--update':
-        options.update = true;
-        options.output = 'CHANGELOG.md';
-        break;
-      default:
-        if (arg?.startsWith('--')) {
-          console.error(`Unknown option: ${arg}`);
-          process.exit(1);
-        }
-    }
-  }
+  const options: ChangelogOptions = {
+    from: values.from as string | undefined,
+    to: values.to as string,
+    format: values.format as ChangelogOptions['format'],
+    output: values.update ? 'CHANGELOG.md' : (values.output as string),
+    update: values.update as boolean,
+  };
 
   return options;
 }
 
 async function main() {
-  const options = parseArgs();
+  const options = parseArgsFromArgv();
   const projectPath = process.cwd();
 
   console.log(`\n📋 Generating changelog for: ${projectPath}\n`);

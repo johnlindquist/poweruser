@@ -3,17 +3,18 @@
     "allow": [
       "Bash(bun run:*)",
       "Bash(chmod:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(cat:*)"
     ]
   },
   "hooks": {
-    "SessionEnd": [
+    "PostToolUse": [
       {
-        "matcher": "",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "bun run .claude/hooks/SessionEnd.ts"
+            "command": "bun run .claude/hooks/PostToolUse.ts"
           }
         ]
       }

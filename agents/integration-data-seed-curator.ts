@@ -28,6 +28,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 interface IntegrationSeedOptions {
   projectPath: string;
@@ -40,7 +41,6 @@ interface IntegrationSeedOptions {
   slackPath?: string;
   maxEventAgeDays: number;
   includeThirdPartyMocks: boolean;
-  unknownArgs: string[];
 }
 
 function showHelp(): void {
@@ -61,124 +61,45 @@ function showHelp(): void {
     `  -h, --help               Show this message\n`);
 }
 
-function parseArgs(argv: string[]): IntegrationSeedOptions | null {
-  const options: IntegrationSeedOptions = {
-    projectPath: process.cwd(),
-    environmentName: 'integration',
-    seedScriptPath: './seeds/integration-seed-kit.ts',
-    reportPath: './docs/integration-seed-report.md',
-    slackPath: './docs/integration-seed-slack.md',
-    maxEventAgeDays: 21,
-    includeThirdPartyMocks: true,
-    unknownArgs: [],
-  };
+function parseArgsFromArgv(argv: string[]): IntegrationSeedOptions | null {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      project: { type: 'string', default: process.cwd() },
+      tickets: { type: 'string' },
+      analytics: { type: 'string' },
+      'feature-flags': { type: 'string' },
+      environment: { type: 'string', default: 'integration' },
+      'seed-out': { type: 'string', default: './seeds/integration-seed-kit.ts' },
+      'report-out': { type: 'string', default: './docs/integration-seed-report.md' },
+      'slack-out': { type: 'string', default: './docs/integration-seed-slack.md' },
+      'max-age': { type: 'string', default: '21' },
+      'no-third-party': { type: 'boolean', default: false },
+    },
+    strict: false,
+  });
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const current = argv[i];
-    if (typeof current !== 'string') {
-      continue;
-    }
-    const arg = current;
-
-    if (arg === '--help' || arg === '-h') {
-      showHelp();
-      return null;
-    }
-
-    if (arg === '--project') {
-      options.projectPath = argv[++i] ?? options.projectPath;
-      continue;
-    }
-    if (arg.startsWith('--project=')) {
-      options.projectPath = arg.split('=')[1] ?? options.projectPath;
-      continue;
-    }
-
-    if (arg === '--tickets') {
-      options.ticketsPath = argv[++i];
-      continue;
-    }
-    if (arg.startsWith('--tickets=')) {
-      options.ticketsPath = arg.split('=')[1];
-      continue;
-    }
-
-    if (arg === '--analytics') {
-      options.analyticsPath = argv[++i];
-      continue;
-    }
-    if (arg.startsWith('--analytics=')) {
-      options.analyticsPath = arg.split('=')[1];
-      continue;
-    }
-
-    if (arg === '--feature-flags') {
-      options.featureFlagPath = argv[++i];
-      continue;
-    }
-    if (arg.startsWith('--feature-flags=')) {
-      options.featureFlagPath = arg.split('=')[1];
-      continue;
-    }
-
-    if (arg === '--environment') {
-      options.environmentName = argv[++i] ?? options.environmentName;
-      continue;
-    }
-    if (arg.startsWith('--environment=')) {
-      options.environmentName = arg.split('=')[1] ?? options.environmentName;
-      continue;
-    }
-
-    if (arg === '--seed-out') {
-      options.seedScriptPath = argv[++i] ?? options.seedScriptPath;
-      continue;
-    }
-    if (arg.startsWith('--seed-out=')) {
-      options.seedScriptPath = arg.split('=')[1] ?? options.seedScriptPath;
-      continue;
-    }
-
-    if (arg === '--report-out') {
-      options.reportPath = argv[++i] ?? options.reportPath;
-      continue;
-    }
-    if (arg.startsWith('--report-out=')) {
-      options.reportPath = arg.split('=')[1] ?? options.reportPath;
-      continue;
-    }
-
-    if (arg === '--slack-out') {
-      options.slackPath = argv[++i] ?? options.slackPath;
-      continue;
-    }
-    if (arg.startsWith('--slack-out=')) {
-      options.slackPath = arg.split('=')[1] ?? options.slackPath;
-      continue;
-    }
-
-    if (arg === '--max-age') {
-      const value = parseInt(argv[++i] ?? '', 10);
-      if (!Number.isNaN(value)) {
-        options.maxEventAgeDays = value;
-      }
-      continue;
-    }
-    if (arg.startsWith('--max-age=')) {
-      const value = parseInt(arg.split('=')[1] ?? '', 10);
-      if (!Number.isNaN(value)) {
-        options.maxEventAgeDays = value;
-      }
-      continue;
-    }
-
-    if (arg === '--no-third-party') {
-      options.includeThirdPartyMocks = false;
-      continue;
-    }
-
-    options.unknownArgs.push(arg);
+  if (values.help) {
+    showHelp();
+    return null;
   }
+
+  const maxAge = Number.parseInt(values['max-age'] as string, 10);
+  const maxEventAgeDays = Number.isNaN(maxAge) ? 21 : maxAge;
+
+  const options: IntegrationSeedOptions = {
+    projectPath: values.project as string,
+    ticketsPath: values.tickets as string | undefined,
+    analyticsPath: values.analytics as string | undefined,
+    featureFlagPath: values['feature-flags'] as string | undefined,
+    environmentName: values.environment as string,
+    seedScriptPath: values['seed-out'] as string,
+    reportPath: values['report-out'] as string,
+    slackPath: values['slack-out'] as string | undefined,
+    maxEventAgeDays,
+    includeThirdPartyMocks: !(values['no-third-party'] as boolean),
+  };
 
   return options;
 }
@@ -282,9 +203,6 @@ async function runIntegrationDataSeedCurator(options: IntegrationSeedOptions): P
   if (additionalDirectories.length > 0) {
     console.log(`Additional directories: ${additionalDirectories.join(', ')}`);
   }
-  if (options.unknownArgs.length > 0) {
-    console.warn(`\n⚠️  Ignored unknown arguments: ${options.unknownArgs.join(', ')}`);
-  }
   console.log();
 
   const stream = query({
@@ -342,7 +260,7 @@ async function runIntegrationDataSeedCurator(options: IntegrationSeedOptions): P
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const parsed = parseArgs(args);
+  const parsed = parseArgsFromArgv(args);
   if (!parsed) {
     return;
   }

@@ -26,60 +26,29 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
-type ArgValue = string | boolean;
-interface ParsedArgs {
-  flags: Record<string, ArgValue>;
-  positionals: string[];
-}
-
-function parseArgs(args: string[]): ParsedArgs {
-  const flags: Record<string, ArgValue> = {};
-  const positionals: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (!arg) continue;
-
-    if (arg.startsWith('--')) {
-      const [key, value] = arg.slice(2).split('=');
-      if (key) {
-        if (value !== undefined) {
-          flags[key] = value;
-        } else {
-          const nextArg = args[i + 1];
-          if (nextArg && !nextArg.startsWith('-')) {
-            flags[key] = nextArg;
-            i++;
-          } else {
-            flags[key] = true;
-          }
-        }
-      }
-    } else if (arg.startsWith('-')) {
-      const key = arg.slice(1);
-      if (key) {
-        flags[key] = true;
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-
-  return { flags, positionals };
-}
-
-const { flags, positionals } = parseArgs(process.argv.slice(2));
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    help: { type: 'boolean', short: 'h', default: false },
+    standard: { type: 'string', default: 'AA' },
+    fix: { type: 'boolean', default: false },
+    output: { type: 'string', default: 'a11y-report.md' },
+    framework: { type: 'string', default: 'auto' },
+  },
+  allowPositionals: true,
+});
 
 const PROJECT_PATH = positionals[0] || process.cwd();
 
 // Parse CLI arguments
-const WCAG_LEVEL = (flags.standard as string)?.toUpperCase() || 'AA';
-const AUTO_FIX = !!flags.fix;
-const OUTPUT_FILE = (flags.output as string) || 'a11y-report.md';
-const FRAMEWORK = (flags.framework as string)?.toLowerCase() || 'auto';
+const WCAG_LEVEL = (values.standard as string).toUpperCase();
+const AUTO_FIX = values.fix as boolean;
+const OUTPUT_FILE = values.output as string;
+const FRAMEWORK = (values.framework as string).toLowerCase();
 
-if (flags.help || flags.h) {
+if (values.help) {
   console.log(`
 🌐 Accessibility Audit Helper
 

@@ -28,6 +28,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolve } from 'path';
+import { parseArgs } from 'util';
 
 interface InterviewPrepOptions {
   githubUsername: string;
@@ -378,10 +379,21 @@ IMPORTANT:
 }
 
 // Parse command line arguments
-function parseArgs(): InterviewPrepOptions {
-  const args = process.argv.slice(2);
+function parseArgsFromArgv(): InterviewPrepOptions {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      github: { type: 'string' },
+      'job-url': { type: 'string' },
+      role: { type: 'string' },
+      repo: { type: 'string' },
+      output: { type: 'string', default: './interview-prep' },
+    },
+    strict: true,
+  });
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  if (values.help || process.argv.slice(2).length === 0) {
     console.log(`
 🎯 Interview Prep Autopilot - Transform GitHub activity into interview confidence
 
@@ -411,79 +423,22 @@ Examples:
     process.exit(0);
   }
 
-  let githubUsername: string | undefined;
-  let jobUrl: string | undefined;
-  let targetRole: string | undefined;
-  let focusRepo: string | undefined;
-  let outputDir = './interview-prep';
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    const nextArg = args[i + 1];
-
-    switch (arg) {
-      case '--github':
-        if (!nextArg) {
-          console.error('Error: --github requires a username');
-          process.exit(1);
-        }
-        githubUsername = nextArg;
-        i++;
-        break;
-      case '--job-url':
-        if (!nextArg) {
-          console.error('Error: --job-url requires a URL');
-          process.exit(1);
-        }
-        jobUrl = nextArg;
-        i++;
-        break;
-      case '--role':
-        if (!nextArg) {
-          console.error('Error: --role requires a role title');
-          process.exit(1);
-        }
-        targetRole = nextArg;
-        i++;
-        break;
-      case '--repo':
-        if (!nextArg) {
-          console.error('Error: --repo requires a repository name');
-          process.exit(1);
-        }
-        focusRepo = nextArg;
-        i++;
-        break;
-      case '--output':
-        if (!nextArg) {
-          console.error('Error: --output requires a directory path');
-          process.exit(1);
-        }
-        outputDir = nextArg;
-        i++;
-        break;
-      default:
-        console.error(`Unknown option: ${arg}`);
-        process.exit(1);
-    }
-  }
-
   // Validate required arguments
-  if (!githubUsername) {
+  if (!values.github) {
     console.error('Error: --github <username> is required');
     console.error('Run with --help to see usage examples');
     process.exit(1);
   }
 
   return {
-    githubUsername,
-    jobUrl,
-    targetRole,
-    focusRepo,
-    outputDir,
+    githubUsername: values.github as string,
+    jobUrl: values['job-url'] as string | undefined,
+    targetRole: values.role as string | undefined,
+    focusRepo: values.repo as string | undefined,
+    outputDir: values.output as string,
   };
 }
 
 // Main execution
-const options = parseArgs();
+const options = parseArgsFromArgv();
 generateInterviewPrep(options);

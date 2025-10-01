@@ -29,6 +29,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 interface CliOptions {
   releaseRef: string;
@@ -47,89 +48,54 @@ function printHelp(): void {
   console.log(`\n🚦 Release Gatekeeper Auditor\n\nUsage:\n  bun run agents/release-gatekeeper-auditor.ts [options]\n\nOptions:\n  --release <git-ref>        Release candidate ref or branch (default: HEAD)\n  --prev <git-ref>           Previous stable ref for comparison (default: origin/main)\n  --report <file>            Output markdown report path (default: release-gatekeeper-audit.md)\n  --notes <path>             Release notes draft to validate\n  --changelog <path>         Changelog file to cross-check\n  --flags <dir>              Directory with feature flag definitions (repeatable)\n  --manifest <file>          Runtime or infrastructure manifest to diff (repeatable)\n  --incident <path>          Incident or bug log file/dir to review (repeatable)\n  --lookback <days>          History window for issues & rollbacks (default: 14)\n  --dry-run                  Request explicit dry-run rehearsal recommendations\n  --help                     Show this message\n\nExamples:\n  bun run agents/release-gatekeeper-auditor.ts --release HEAD --prev origin/main\n  bun run agents/release-gatekeeper-auditor.ts --release v2.3.0 --prev v2.2.4 --notes notes.md\n`);
 }
 
-function expectValue(args: string[], index: number, flag: string): string {
-  const value = args[index];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`Missing value for ${flag}`);
+function getCliOptions(argv: string[]): CliOptions {
+  const { positionals, values } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      help: { type: 'boolean' },
+      release: { type: 'string' },
+      prev: { type: 'string' },
+      report: { type: 'string' },
+      notes: { type: 'string' },
+      changelog: { type: 'string' },
+      flags: { type: 'string', multiple: true },
+      manifest: { type: 'string', multiple: true },
+      incident: { type: 'string', multiple: true },
+      lookback: { type: 'string' },
+      'dry-run': { type: 'boolean' },
+    },
+  });
+
+  if (values.help) {
+    printHelp();
+    process.exit(0);
   }
-  return value;
-}
 
-function parseArgs(argv: string[]): CliOptions {
-  let releaseRef = 'HEAD';
-  let previousRef = 'origin/main';
-  let reportFile = 'release-gatekeeper-audit.md';
-  let notesPath: string | undefined;
-  let changelogPath: string | undefined;
-  const featureFlagDirs: string[] = [];
-  const manifestPaths: string[] = [];
-  const incidentLogs: string[] = [];
+  const releaseRef = (values.release as string | undefined) || positionals[0] || 'HEAD';
+  const previousRef = (values.prev as string | undefined) || 'origin/main';
+  const reportFile = (values.report as string | undefined) || 'release-gatekeeper-audit.md';
+
   let lookbackDays = 14;
-  let dryRunPlan = false;
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-
-    switch (arg) {
-      case '--help':
-        printHelp();
-        process.exit(0);
-      case '--release':
-        releaseRef = expectValue(argv, ++i, '--release');
-        break;
-      case '--prev':
-        previousRef = expectValue(argv, ++i, '--prev');
-        break;
-      case '--report':
-        reportFile = expectValue(argv, ++i, '--report');
-        break;
-      case '--notes':
-        notesPath = expectValue(argv, ++i, '--notes');
-        break;
-      case '--changelog':
-        changelogPath = expectValue(argv, ++i, '--changelog');
-        break;
-      case '--flags':
-        featureFlagDirs.push(expectValue(argv, ++i, '--flags'));
-        break;
-      case '--manifest':
-        manifestPaths.push(expectValue(argv, ++i, '--manifest'));
-        break;
-      case '--incident':
-        incidentLogs.push(expectValue(argv, ++i, '--incident'));
-        break;
-      case '--lookback': {
-        const rawValue = expectValue(argv, ++i, '--lookback');
-        const parsed = Number(rawValue);
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-          throw new Error('--lookback must be a positive number of days');
-        }
-        lookbackDays = Math.floor(parsed);
-        break;
-      }
-      case '--dry-run':
-        dryRunPlan = true;
-        break;
-      default:
-        if (arg.startsWith('--')) {
-          throw new Error(`Unknown flag: ${arg}`);
-        }
-        releaseRef = arg;
+  if (values.lookback) {
+    const parsed = Number(values.lookback);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error('--lookback must be a positive number of days');
     }
+    lookbackDays = Math.floor(parsed);
   }
 
   return {
     releaseRef,
     previousRef,
     reportFile,
-    notesPath,
-    changelogPath,
-    featureFlagDirs,
-    manifestPaths,
-    incidentLogs,
+    notesPath: values.notes as string | undefined,
+    changelogPath: values.changelog as string | undefined,
+    featureFlagDirs: (values.flags as string[] | undefined) || [],
+    manifestPaths: (values.manifest as string[] | undefined) || [],
+    incidentLogs: (values.incident as string[] | undefined) || [],
     lookbackDays,
-    dryRunPlan,
+    dryRunPlan: (values['dry-run'] as boolean | undefined) || false,
   };
 }
 
@@ -151,7 +117,7 @@ function validateHint(pathValue: string | undefined, description: string): strin
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const options = parseArgs(argv);
+  const options = getCliOptions(argv);
 
   console.log('🚦 Release Gatekeeper Auditor\n');
   console.log(`📂 Repository: ${process.cwd()}`);

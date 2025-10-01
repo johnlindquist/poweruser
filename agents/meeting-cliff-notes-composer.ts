@@ -47,6 +47,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { parseArgs } from "util";
 
 type OutputFormat = "slack" | "markdown" | "notion" | "email";
 type SummaryLength = "digest" | "standard" | "deep";
@@ -80,14 +81,6 @@ function printHelp(): void {
   console.log(`\nMeeting Cliff Notes Composer\n\nUsage:\n  bun run agents/meeting-cliff-notes-composer.ts [options]\n\nFor detailed flag descriptions see the file header.\n`);
 }
 
-function expectValue(args: string[], index: number, flag: string): string {
-  const value = args[index];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
-
 function parseList(input: string | undefined): string[] {
   if (!input) {
     return [];
@@ -98,129 +91,83 @@ function parseList(input: string | undefined): string[] {
     .filter((item) => item.length > 0);
 }
 
-function parseArgs(argv: string[]): MeetingCliffNotesOptions {
-  if (argv.includes("--help")) {
+function parseArgsFromArgv(argv: string[]): MeetingCliffNotesOptions {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", default: false },
+      title: { type: "string", default: "Engineering Meeting" },
+      date: { type: "string" },
+      timezone: { type: "string" },
+      team: { type: "string" },
+      project: { type: "string" },
+      attendee: { type: "string", multiple: true },
+      attendees: { type: "string" },
+      focus: { type: "string" },
+      transcript: { type: "string", multiple: true },
+      doc: { type: "string", multiple: true },
+      note: { type: "string", multiple: true },
+      extra: { type: "string", multiple: true },
+      "summary-length": { type: "string", default: "standard" },
+      format: { type: "string", default: "markdown" },
+      "followup-days": { type: "string", default: "5" },
+      "highlight-risks": { type: "boolean", default: true },
+      "no-highlight-risks": { type: "boolean", default: false },
+      "include-quotes": { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  if (values.help) {
     printHelp();
     process.exit(0);
   }
 
-  const options: MeetingCliffNotesOptions = {
-    title: "Engineering Meeting",
-    attendees: [],
-    focusAreas: [],
-    transcriptPaths: [],
-    docPaths: [],
-    manualNotes: [],
-    extraInstructions: [],
-    followupWindowDays: 5,
-    summaryLength: "standard",
-    format: "markdown",
-    highlightRisks: true,
-    includeQuotes: false,
-  };
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (typeof token === "undefined") {
-      continue;
-    }
-
-    switch (token) {
-      case "--title": {
-        options.title = expectValue(argv, ++index, "--title");
-        break;
-      }
-      case "--date": {
-        options.meetingDate = expectValue(argv, ++index, "--date");
-        break;
-      }
-      case "--timezone": {
-        options.timezone = expectValue(argv, ++index, "--timezone");
-        break;
-      }
-      case "--team": {
-        options.team = expectValue(argv, ++index, "--team");
-        break;
-      }
-      case "--project": {
-        options.project = expectValue(argv, ++index, "--project");
-        break;
-      }
-      case "--attendee": {
-        options.attendees.push(expectValue(argv, ++index, "--attendee"));
-        break;
-      }
-      case "--attendees": {
-        const listValue = expectValue(argv, ++index, "--attendees");
-        options.attendees.push(...parseList(listValue));
-        break;
-      }
-      case "--focus": {
-        const focusValue = expectValue(argv, ++index, "--focus");
-        options.focusAreas = [...options.focusAreas, ...parseList(focusValue)];
-        break;
-      }
-      case "--transcript": {
-        options.transcriptPaths.push(expectValue(argv, ++index, "--transcript"));
-        break;
-      }
-      case "--doc": {
-        options.docPaths.push(expectValue(argv, ++index, "--doc"));
-        break;
-      }
-      case "--note": {
-        options.manualNotes.push(expectValue(argv, ++index, "--note"));
-        break;
-      }
-      case "--extra": {
-        options.extraInstructions.push(expectValue(argv, ++index, "--extra"));
-        break;
-      }
-      case "--summary-length": {
-        const value = expectValue(argv, ++index, "--summary-length");
-        if (value !== "digest" && value !== "standard" && value !== "deep") {
-          throw new Error("--summary-length must be digest, standard, or deep");
-        }
-        options.summaryLength = value;
-        break;
-      }
-      case "--format": {
-        const value = expectValue(argv, ++index, "--format");
-        if (value !== "slack" && value !== "markdown" && value !== "notion" && value !== "email") {
-          throw new Error("--format must be slack, markdown, notion, or email");
-        }
-        options.format = value;
-        break;
-      }
-      case "--followup-days": {
-        const raw = expectValue(argv, ++index, "--followup-days");
-        const parsed = Number.parseInt(raw, 10);
-        if (Number.isNaN(parsed) || parsed <= 0) {
-          throw new Error("--followup-days must be a positive integer");
-        }
-        options.followupWindowDays = parsed;
-        break;
-      }
-      case "--highlight-risks": {
-        options.highlightRisks = true;
-        break;
-      }
-      case "--no-highlight-risks": {
-        options.highlightRisks = false;
-        break;
-      }
-      case "--include-quotes": {
-        options.includeQuotes = true;
-        break;
-      }
-      default: {
-        if (token.startsWith("--")) {
-          throw new Error(`Unknown flag: ${token}`);
-        }
-        options.manualNotes.push(token);
-      }
-    }
+  const summaryLength = values["summary-length"] as string;
+  if (summaryLength !== "digest" && summaryLength !== "standard" && summaryLength !== "deep") {
+    throw new Error("--summary-length must be digest, standard, or deep");
   }
+
+  const format = values.format as string;
+  if (format !== "slack" && format !== "markdown" && format !== "notion" && format !== "email") {
+    throw new Error("--format must be slack, markdown, notion, or email");
+  }
+
+  const followupDays = Number.parseInt(values["followup-days"] as string, 10);
+  if (Number.isNaN(followupDays) || followupDays <= 0) {
+    throw new Error("--followup-days must be a positive integer");
+  }
+
+  const attendees: string[] = [];
+  if (values.attendee) {
+    attendees.push(...(values.attendee as string[]));
+  }
+  if (values.attendees) {
+    attendees.push(...parseList(values.attendees as string));
+  }
+
+  const focusAreas = values.focus ? parseList(values.focus as string) : [];
+
+  const highlightRisks = values["no-highlight-risks"] ? false : (values["highlight-risks"] as boolean);
+
+  const options: MeetingCliffNotesOptions = {
+    title: values.title as string,
+    meetingDate: values.date as string | undefined,
+    timezone: values.timezone as string | undefined,
+    team: values.team as string | undefined,
+    project: values.project as string | undefined,
+    attendees,
+    focusAreas,
+    transcriptPaths: (values.transcript as string[] | undefined) ?? [],
+    docPaths: (values.doc as string[] | undefined) ?? [],
+    manualNotes: [...((values.note as string[] | undefined) ?? []), ...positionals],
+    extraInstructions: (values.extra as string[] | undefined) ?? [],
+    followupWindowDays: followupDays,
+    summaryLength: summaryLength as SummaryLength,
+    format: format as OutputFormat,
+    highlightRisks,
+    includeQuotes: values["include-quotes"] as boolean,
+  };
 
   return options;
 }
@@ -372,7 +319,7 @@ Deliver the final briefing only, without preamble or tool logs.`;
 
 async function main(): Promise<void> {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parseArgsFromArgv(process.argv.slice(2));
 
     if (
       options.transcriptPaths.length === 0 &&

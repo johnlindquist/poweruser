@@ -14,6 +14,7 @@
 
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { parseArgs } from "util";
 
 type CliOptions = {
   servicePath: string;
@@ -33,55 +34,33 @@ const defaultTimezone = (() => {
   }
 })();
 
-function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = {
-    servicePath: ".",
-    lookbackWindow: "7d",
-    timezone: defaultTimezone,
+function getCliOptions(argv: string[]): CliOptions {
+  const { positionals, values } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      incidents: { type: "string" },
+      runbooks: { type: "string" },
+      dashboards: { type: "string" },
+      rotation: { type: "string" },
+      lookback: { type: "string" },
+      timezone: { type: "string" },
+    },
+    strict: false,
+  });
+
+  return {
+    servicePath: positionals[0] || ".",
+    incidentPath: values.incidents as string | undefined,
+    runbookPath: values.runbooks as string | undefined,
+    dashboardsPath: values.dashboards as string | undefined,
+    rotationSheet: values.rotation as string | undefined,
+    lookbackWindow: (values.lookback as string | undefined) || "7d",
+    timezone: (values.timezone as string | undefined) || defaultTimezone,
   };
-
-  for (const arg of argv) {
-    if (!arg.startsWith("--")) {
-      if (options.servicePath === ".") {
-        options.servicePath = arg;
-      } else {
-        console.warn(`Ignoring extra positional argument: ${arg}`);
-      }
-      continue;
-    }
-
-    const [flag, rawValue] = arg.split("=", 2);
-    const value = rawValue?.trim();
-
-    switch (flag) {
-      case "--incidents":
-        if (value) options.incidentPath = value;
-        break;
-      case "--runbooks":
-        if (value) options.runbookPath = value;
-        break;
-      case "--dashboards":
-        if (value) options.dashboardsPath = value;
-        break;
-      case "--rotation":
-        if (value) options.rotationSheet = value;
-        break;
-      case "--lookback":
-        if (value) options.lookbackWindow = value;
-        break;
-      case "--timezone":
-        if (value) options.timezone = value;
-        break;
-      default:
-        console.warn(`Ignoring unknown flag: ${flag}`);
-        break;
-    }
-  }
-
-  return options;
 }
 
-const cli = parseArgs(process.argv.slice(2));
+const cli = getCliOptions(process.argv.slice(2));
 const resolvedPaths = [
   cli.servicePath,
   cli.incidentPath,

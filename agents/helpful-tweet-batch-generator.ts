@@ -2,75 +2,40 @@
 
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-
-type ArgValue = string | boolean;
-
-type ArgMap = Record<string, ArgValue>;
-
-function parseArgs(args: string[]): ArgMap {
-  const result: ArgMap = {};
-
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-
-    if (typeof token !== 'string') {
-      continue;
-    }
-
-    if (!token.startsWith('--')) {
-      if (typeof result.idea !== 'string') {
-        result.idea = token;
-      }
-      continue;
-    }
-
-    const [rawKey, inlineValue] = token.split('=');
-    if (!rawKey) {
-      continue;
-    }
-    const key = rawKey.slice(2);
-
-    if (inlineValue !== undefined) {
-      result[key] = inlineValue;
-      continue;
-    }
-
-    const next = args[i + 1];
-    if (next && !next.startsWith('-')) {
-      result[key] = next;
-      i += 1;
-    } else {
-      result[key] = true;
-    }
-  }
-
-  return result;
-}
+import { parseArgs } from 'util';
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const { values, positionals } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      count: { type: 'string', default: '10' },
+      idea: { type: 'string' },
+      draft: { type: 'string' },
+      'tweet-idea': { type: 'string' },
+      output: { type: 'string', default: './tweet-batch.md' },
+      'include-replies': { type: 'boolean', default: false },
+    },
+    allowPositionals: true,
+  });
 
-  const tweetCount = Number.parseInt((args.count as string) ?? '10', 10);
+  const tweetCount = Number.parseInt(values.count as string, 10);
   if (!Number.isFinite(tweetCount) || tweetCount <= 0) {
     console.error('❌ Invalid --count value. Please provide a positive integer.');
     process.exit(1);
   }
 
   const rawIdea =
-    typeof args.idea === 'string'
-      ? args.idea
-      : typeof args.draft === 'string'
-        ? args.draft
-        : typeof args['tweet-idea'] === 'string'
-          ? args['tweet-idea']
-          : undefined;
-  const trimmedIdea = rawIdea?.trim();
+    values.idea ??
+    values.draft ??
+    values['tweet-idea'] ??
+    (positionals.length > 0 ? positionals[0] : undefined);
+  const trimmedIdea = (rawIdea as string | undefined)?.trim();
   const idea = trimmedIdea && trimmedIdea.length > 0 ? trimmedIdea : undefined;
 
-  const outputPath = path.resolve(String(args.output ?? './tweet-batch.md'));
+  const outputPath = path.resolve(values.output as string);
   const outputDir = path.dirname(outputPath);
 
-  const includeReplies = Boolean(args['include-replies']);
+  const includeReplies = values['include-replies'] as boolean;
 
   const runDate = new Date().toISOString().split('T')[0];
 

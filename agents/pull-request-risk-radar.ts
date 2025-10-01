@@ -19,6 +19,7 @@
  */
 
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 interface CliOptions {
   baseBranch: string;
@@ -28,47 +29,28 @@ interface CliOptions {
   maxRecentCommits: number;
 }
 
-function parseArgs(): CliOptions {
-  const args = process.argv.slice(2);
-  let baseBranch = 'main';
-  let compareRange = 'HEAD';
-  let reportFile = 'pull-request-risk-report.md';
-  let prNumber: string | undefined;
+function getCliOptions(): CliOptions {
+  const { positionals, values } = parseArgs({
+    args: Bun.argv.slice(2),
+    allowPositionals: true,
+    options: {
+      base: { type: 'string' },
+      report: { type: 'string' },
+      pr: { type: 'string' },
+      'max-commits': { type: 'string' },
+    },
+  });
+
+  const baseBranch = (values.base as string | undefined) || 'main';
+  let compareRange = positionals[0] || 'HEAD';
+  const reportFile = (values.report as string | undefined) || 'pull-request-risk-report.md';
+  const prNumber = values.pr as string | undefined;
+
   let maxRecentCommits = 20;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!arg) continue;
-
-    if (arg === '--base') {
-      const nextArg = args[i + 1];
-      if (nextArg) {
-        baseBranch = nextArg;
-        i += 1;
-      }
-    } else if (arg === '--report') {
-      const nextArg = args[i + 1];
-      if (nextArg) {
-        reportFile = nextArg;
-        i += 1;
-      }
-    } else if (arg === '--pr') {
-      const nextArg = args[i + 1];
-      if (nextArg) {
-        prNumber = nextArg;
-        i += 1;
-      }
-    } else if (arg === '--max-commits') {
-      const nextArg = args[i + 1];
-      if (nextArg) {
-        const value = Number(nextArg);
-        if (!Number.isNaN(value) && value > 0) {
-          maxRecentCommits = value;
-        }
-        i += 1;
-      }
-    } else if (!arg.startsWith('--') && compareRange === 'HEAD') {
-      compareRange = arg;
+  if (values['max-commits']) {
+    const value = Number(values['max-commits']);
+    if (!Number.isNaN(value) && value > 0) {
+      maxRecentCommits = value;
     }
   }
 
@@ -86,7 +68,7 @@ function parseArgs(): CliOptions {
 }
 
 async function main() {
-  const { baseBranch, compareRange, reportFile, prNumber, maxRecentCommits } = parseArgs();
+  const { baseBranch, compareRange, reportFile, prNumber, maxRecentCommits } = getCliOptions();
 
   console.log('🛰️  Pull Request Risk Radar\n');
   console.log(`📂 Repo: ${process.cwd()}`);

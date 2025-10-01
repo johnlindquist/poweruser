@@ -15,6 +15,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 interface StorybookCoverageOptions {
   projectPath: string;
@@ -26,28 +27,25 @@ interface StorybookCoverageOptions {
   includeMdx: boolean;
 }
 
-function parseArgs(): StorybookCoverageOptions {
-  const args = process.argv.slice(2);
-  let projectPath = process.cwd();
-  const restArgs = [...args];
+function getOptions(): StorybookCoverageOptions {
+  const { positionals, values } = parseArgs({
+    args: Bun.argv.slice(2),
+    allowPositionals: true,
+    options: {
+      'stories-dir': { type: 'string' },
+      'component-globs': { type: 'string' },
+      'report': { type: 'string' },
+      'component': { type: 'string' },
+      'auto-stub': { type: 'boolean' },
+      'no-mdx': { type: 'boolean' },
+    },
+  });
 
-  if (restArgs[0] && !restArgs[0].startsWith('--')) {
-    projectPath = restArgs[0];
-    restArgs.shift();
-  }
-
-  const getFlagValue = (flag: string) => {
-    const index = restArgs.indexOf(flag);
-    if (index !== -1 && index + 1 < restArgs.length) {
-      return restArgs[index + 1];
-    }
-    return undefined;
-  };
-
-  const storyDirValue = getFlagValue('--stories-dir');
-  const componentGlobValue = getFlagValue('--component-globs');
-  const reportValue = getFlagValue('--report');
-  const focusComponent = getFlagValue('--component');
+  const projectPath = positionals[0] || process.cwd();
+  const storyDirValue = values['stories-dir'] as string | undefined;
+  const componentGlobValue = values['component-globs'] as string | undefined;
+  const reportValue = values['report'] as string | undefined;
+  const focusComponent = values['component'] as string | undefined;
 
   return {
     projectPath,
@@ -61,14 +59,14 @@ function parseArgs(): StorybookCoverageOptions {
           'src/ui/**/*.{tsx,ts,jsx,js,vue,svelte}',
         ],
     reportFile: reportValue || 'storybook-coverage-report.md',
-    autoStub: restArgs.includes('--auto-stub'),
+    autoStub: values['auto-stub'] === true,
     focusComponent,
-    includeMdx: !restArgs.includes('--no-mdx'),
+    includeMdx: values['no-mdx'] !== true,
   };
 }
 
 async function main() {
-  const options = parseArgs();
+  const options = getOptions();
 
   console.log('📚 Storybook Coverage Keeper');
   console.log(`📁 Project: ${options.projectPath}`);

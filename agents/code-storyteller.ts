@@ -26,6 +26,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolve } from 'path';
+import { parseArgs } from 'util';
 
 interface StorytellerOptions {
   feature?: string;
@@ -327,10 +328,20 @@ Use TodoWrite to track your progress through exploration and documentation. Tran
 }
 
 // Parse command line arguments
-function parseArgs(): StorytellerOptions {
-  const args = process.argv.slice(2);
+function parseArgsFromArgv(): StorytellerOptions {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      feature: { type: 'string' },
+      'entry-point': { type: 'string' },
+      output: { type: 'string', default: './code-stories' },
+      format: { type: 'string', default: 'both' },
+    },
+    strict: true,
+  });
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  if (values.help || process.argv.slice(2).length === 0) {
     console.log(`
 📖 Code Storyteller - Transform technical code into engaging narratives
 
@@ -359,67 +370,20 @@ Examples:
     process.exit(0);
   }
 
-  let feature: string | undefined;
-  let entryPoint: string | undefined;
-  let outputDir = './code-stories';
-  let format: 'narrative' | 'journey-map' | 'both' = 'both';
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    const nextArg = args[i + 1];
-
-    switch (arg) {
-      case '--feature':
-        if (!nextArg) {
-          console.error('Error: --feature requires a feature name');
-          process.exit(1);
-        }
-        feature = nextArg;
-        i++;
-        break;
-      case '--entry-point':
-        if (!nextArg) {
-          console.error('Error: --entry-point requires a file path');
-          process.exit(1);
-        }
-        entryPoint = resolve(nextArg);
-        i++;
-        break;
-      case '--output':
-        if (!nextArg) {
-          console.error('Error: --output requires a directory path');
-          process.exit(1);
-        }
-        outputDir = nextArg;
-        i++;
-        break;
-      case '--format':
-        if (!nextArg) {
-          console.error('Error: --format requires a type (narrative, journey-map, or both)');
-          process.exit(1);
-        }
-        if (nextArg !== 'narrative' && nextArg !== 'journey-map' && nextArg !== 'both') {
-          console.error('Error: --format must be "narrative", "journey-map", or "both"');
-          process.exit(1);
-        }
-        format = nextArg as 'narrative' | 'journey-map' | 'both';
-        i++;
-        break;
-      default:
-        console.error(`Unknown option: ${arg}`);
-        console.error('Run with --help to see available options');
-        process.exit(1);
-    }
+  const format = values.format as string;
+  if (format !== 'narrative' && format !== 'journey-map' && format !== 'both') {
+    console.error('Error: --format must be "narrative", "journey-map", or "both"');
+    process.exit(1);
   }
 
   return {
-    feature,
-    entryPoint,
-    outputDir,
-    format,
+    feature: values.feature as string | undefined,
+    entryPoint: values['entry-point'] ? resolve(values['entry-point'] as string) : undefined,
+    outputDir: values.output as string,
+    format: format as 'narrative' | 'journey-map' | 'both',
   };
 }
 
 // Main execution
-const options = parseArgs();
+const options = parseArgsFromArgv();
 tellCodeStory(options);

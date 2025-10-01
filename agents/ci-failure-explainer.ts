@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 type Provider = 'github' | 'gitlab' | 'circleci' | 'azure' | 'buildkite' | 'jenkins' | 'other';
 
@@ -33,81 +34,55 @@ function printHelp(): void {
   console.log(`\n🚨 CI Failure Explainer\n\nUsage:\n  bun run agents/ci-failure-explainer.ts --log <path> [--log <path> ...] [options]\n\nOptions:\n  --log <path>             Path to a CI log or artifact (repeatable)\n  --provider <name>        CI provider (github|gitlab|circleci|azure|buildkite|jenkins|other)\n  --branch <name>          Failing branch or tag\n  --compare <ref>          Reference branch to diff against (e.g. main)\n  --flake-window <mins>    Minutes of history to inspect for flaky tests (default: 720)\n  --timeline               Ask the agent to reconstruct a job timeline\n  --fetch-artifacts        Allow the agent to recreate curl commands for artifact downloads\n  --help                   Show this message\n\nExamples:\n  bun run agents/ci-failure-explainer.ts --log artifacts/ci/github-actions.log\n  bun run agents/ci-failure-explainer.ts --log logs/job.log --log logs/tests.log --branch release/1.3 --compare main\n  `);
 }
 
-function expectValue(args: string[], index: number, flag: string): string {
-  const value = args[index];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`Missing value for ${flag}`);
-  }
-  return value;
-}
-
-function parseArgs(argv: string[]): CiFailureExplainerOptions {
+function parseArgsFromArgv(argv: string[]): CiFailureExplainerOptions {
   if (argv.length === 0) {
     printHelp();
     throw new Error('No arguments supplied');
   }
 
-  const options: CiFailureExplainerOptions = {
-    logPaths: [],
-    flakyWindowMinutes: 720,
-    includeTimeline: false,
-    fetchArtifacts: false,
-  };
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: 'boolean', default: false },
+      log: { type: 'string', multiple: true },
+      provider: { type: 'string' },
+      branch: { type: 'string' },
+      compare: { type: 'string' },
+      'flake-window': { type: 'string', default: '720' },
+      timeline: { type: 'boolean', default: false },
+      'fetch-artifacts': { type: 'boolean', default: false },
+    },
+    allowPositionals: true,
+  });
 
-  for (let i = 0; i < argv.length; i++) {
-    const rawArg = argv[i];
-    if (rawArg === undefined) {
-      continue;
-    }
-    const arg = rawArg;
-    switch (arg) {
-      case '--help':
-        printHelp();
-        process.exit(0);
-      case '--log': {
-        const value = expectValue(argv, ++i, '--log');
-        options.logPaths.push(value);
-        break;
-      }
-      case '--provider': {
-        const value = expectValue(argv, ++i, '--provider');
-        options.provider = (value as Provider) ?? undefined;
-        break;
-      }
-      case '--branch': {
-        options.focusBranch = expectValue(argv, ++i, '--branch');
-        break;
-      }
-      case '--compare': {
-        options.compareBranch = expectValue(argv, ++i, '--compare');
-        break;
-      }
-      case '--flake-window': {
-        const value = expectValue(argv, ++i, '--flake-window');
-        const minutes = Number(value);
-        if (!Number.isFinite(minutes) || minutes <= 0) {
-          throw new Error('flake-window must be a positive number of minutes');
-        }
-        options.flakyWindowMinutes = minutes;
-        break;
-      }
-      case '--timeline':
-        options.includeTimeline = true;
-        break;
-      case '--fetch-artifacts':
-        options.fetchArtifacts = true;
-        break;
-      default:
-        if (arg.startsWith('--')) {
-          throw new Error(`Unknown flag: ${arg}`);
-        }
-        options.logPaths.push(arg);
-    }
+  if (values.help) {
+    printHelp();
+    process.exit(0);
   }
 
-  if (options.logPaths.length === 0) {
+  const flakyWindowMinutes = Number(values['flake-window'] as string);
+  if (!Number.isFinite(flakyWindowMinutes) || flakyWindowMinutes <= 0) {
+    throw new Error('flake-window must be a positive number of minutes');
+  }
+
+  const logPaths = [
+    ...((values.log as string[] | undefined) ?? []),
+    ...positionals,
+  ];
+
+  if (logPaths.length === 0) {
     throw new Error('Provide at least one --log path');
   }
+
+  const options: CiFailureExplainerOptions = {
+    logPaths,
+    provider: values.provider as Provider | undefined,
+    focusBranch: values.branch as string | undefined,
+    compareBranch: values.compare as string | undefined,
+    flakyWindowMinutes,
+    includeTimeline: values.timeline as boolean,
+    fetchArtifacts: values['fetch-artifacts'] as boolean,
+  };
 
   return options;
 }
@@ -294,7 +269,7 @@ async function runCiFailureExplainer(rawOptions: CiFailureExplainerOptions) {
 
 (async () => {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parseArgsFromArgv(process.argv.slice(2));
     await runCiFailureExplainer(options);
   } catch (error) {
     if (error instanceof Error) {

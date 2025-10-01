@@ -26,6 +26,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolve } from 'path';
+import { parseArgs } from 'util';
 
 interface CareerBuilderOptions {
   jobUrl?: string;
@@ -344,10 +345,21 @@ Use TodoWrite to track your progress through each phase. Be encouraging, specifi
 }
 
 // Parse command line arguments
-function parseArgs(): CareerBuilderOptions {
-  const args = process.argv.slice(2);
+function parseArgsFromArgv(): CareerBuilderOptions {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      help: { type: 'boolean', short: 'h', default: false },
+      'job-url': { type: 'string' },
+      github: { type: 'string' },
+      role: { type: 'string' },
+      resume: { type: 'string' },
+      output: { type: 'string', default: './career-plan' },
+    },
+    strict: true,
+  });
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  if (values.help || process.argv.slice(2).length === 0) {
     console.log(`
 🚀 Career Momentum Builder - Transform career anxiety into actionable momentum
 
@@ -377,79 +389,22 @@ Examples:
     process.exit(0);
   }
 
-  let jobUrl: string | undefined;
-  let githubUsername: string | undefined;
-  let targetRole: string | undefined;
-  let resumePath: string | undefined;
-  let outputDir = './career-plan';
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    const nextArg = args[i + 1];
-
-    switch (arg) {
-      case '--job-url':
-        if (!nextArg) {
-          console.error('Error: --job-url requires a URL');
-          process.exit(1);
-        }
-        jobUrl = nextArg;
-        i++;
-        break;
-      case '--github':
-        if (!nextArg) {
-          console.error('Error: --github requires a username');
-          process.exit(1);
-        }
-        githubUsername = nextArg;
-        i++;
-        break;
-      case '--role':
-        if (!nextArg) {
-          console.error('Error: --role requires a role title');
-          process.exit(1);
-        }
-        targetRole = nextArg;
-        i++;
-        break;
-      case '--resume':
-        if (!nextArg) {
-          console.error('Error: --resume requires a file path');
-          process.exit(1);
-        }
-        resumePath = resolve(nextArg);
-        i++;
-        break;
-      case '--output':
-        if (!nextArg) {
-          console.error('Error: --output requires a directory path');
-          process.exit(1);
-        }
-        outputDir = nextArg;
-        i++;
-        break;
-      default:
-        console.error(`Unknown option: ${arg}`);
-        process.exit(1);
-    }
-  }
-
   // Validate that at least some input is provided
-  if (!jobUrl && !githubUsername && !targetRole && !resumePath) {
+  if (!values['job-url'] && !values.github && !values.role && !values.resume) {
     console.error('Error: Please provide at least one of: --job-url, --github, --role, or --resume');
     console.error('Run with --help to see usage examples');
     process.exit(1);
   }
 
   return {
-    jobUrl,
-    githubUsername,
-    targetRole,
-    resumePath,
-    outputDir,
+    jobUrl: values['job-url'] as string | undefined,
+    githubUsername: values.github as string | undefined,
+    targetRole: values.role as string | undefined,
+    resumePath: values.resume ? resolve(values.resume as string) : undefined,
+    outputDir: values.output as string,
   };
 }
 
 // Main execution
-const options = parseArgs();
+const options = parseArgsFromArgv();
 buildCareerMomentum(options);

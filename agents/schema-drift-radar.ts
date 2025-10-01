@@ -28,6 +28,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { parseArgs } from 'util';
 
 type SeverityLevel = 'low' | 'medium' | 'high';
 
@@ -64,147 +65,77 @@ function printUsage() {
   console.log(`  --help                      Show this help text\n`);
 }
 
-function parseArgs(args: string[]): SchemaDriftRadarOptions {
+function parseArgsCustom(args: string[]): SchemaDriftRadarOptions {
+  const { positionals, values } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      project: { type: 'string' },
+      'schema-dump': { type: 'string', multiple: true },
+      orm: { type: 'string', multiple: true },
+      output: { type: 'string' },
+      'generate-migrations': { type: 'boolean' },
+      'no-dry-run': { type: 'boolean' },
+      severity: { type: 'string' },
+      ticket: { type: 'string', multiple: true },
+    },
+    strict: false,
+  });
+
   const options: SchemaDriftRadarOptions = {
-    projectPath: process.cwd(),
+    projectPath: (values.project as string | undefined) ?? process.cwd(),
     schemaSources: [],
-    orms: [],
-    outputFile: 'schema-drift-report.md',
-    generateMigrations: false,
-    dryRun: true,
+    orms: (values.orm as string[] | undefined) ?? [],
+    outputFile: (values.output as string | undefined) ?? 'schema-drift-report.md',
+    generateMigrations: (values['generate-migrations'] as boolean | undefined) ?? false,
+    dryRun: !((values['no-dry-run'] as boolean | undefined) ?? false),
     severity: 'medium',
-    ticketHints: [],
-    showHelp: false,
+    ticketHints: (values.ticket as string[] | undefined) ?? [],
+    showHelp: (values.help as boolean | undefined) ?? false,
     unknownArgs: [],
   };
 
-  const addSchemaSource = (value: string | undefined) => {
-    if (!value) return;
-    const equalsIndex = value.indexOf('=');
-    if (equalsIndex === -1) {
-      options.unknownArgs.push(`--schema-dump ${value}`);
-      return;
+  // Parse schema-dump values which have env=path format
+  const schemaDumps = values['schema-dump'];
+  if (schemaDumps) {
+    const dumps = Array.isArray(schemaDumps) ? schemaDumps : [schemaDumps];
+    for (const dump of dumps) {
+      if (typeof dump !== 'string') continue;
+      const equalsIndex = dump.indexOf('=');
+      if (equalsIndex === -1) {
+        options.unknownArgs.push(`--schema-dump ${dump}`);
+        continue;
+      }
+      const env = dump.slice(0, equalsIndex).trim();
+      const path = dump.slice(equalsIndex + 1).trim();
+      if (!env || !path) {
+        options.unknownArgs.push(`--schema-dump ${dump}`);
+        continue;
+      }
+      options.schemaSources.push({ env, path });
     }
-    const env = value.slice(0, equalsIndex).trim();
-    const path = value.slice(equalsIndex + 1).trim();
-    if (!env || !path) {
-      options.unknownArgs.push(`--schema-dump ${value}`);
-      return;
-    }
-    options.schemaSources.push({ env, path });
-  };
-
-  const setProjectPath = (value: string | undefined) => {
-    if (!value) return;
-    options.projectPath = value;
-  };
-
-  const setOutputFile = (value: string | undefined) => {
-    if (!value) return;
-    options.outputFile = value;
-  };
-
-  const setSeverity = (value: string | undefined) => {
-    if (!value) return;
-    if (value === 'low' || value === 'medium' || value === 'high') {
-      options.severity = value;
-    } else {
-      options.unknownArgs.push(`--severity ${value}`);
-    }
-  };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!arg) continue;
-
-    if (arg === '--help' || arg === '-h') {
-      options.showHelp = true;
-      continue;
-    }
-
-    if (arg.startsWith('--project=')) {
-      setProjectPath(arg.split('=')[1]);
-      continue;
-    }
-    if (arg === '--project') {
-      setProjectPath(args[i + 1]);
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith('--schema-dump=')) {
-      addSchemaSource(arg.split('=')[1]);
-      continue;
-    }
-    if (arg === '--schema-dump') {
-      addSchemaSource(args[i + 1]);
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith('--orm=')) {
-      const value = arg.split('=')[1];
-      if (value) options.orms.push(value);
-      continue;
-    }
-    if (arg === '--orm') {
-      const value = args[i + 1];
-      if (value) options.orms.push(value);
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith('--output=')) {
-      setOutputFile(arg.split('=')[1]);
-      continue;
-    }
-    if (arg === '--output') {
-      setOutputFile(args[i + 1]);
-      i += 1;
-      continue;
-    }
-
-    if (arg === '--generate-migrations') {
-      options.generateMigrations = true;
-      continue;
-    }
-
-    if (arg === '--no-dry-run') {
-      options.dryRun = false;
-      continue;
-    }
-
-    if (arg.startsWith('--severity=')) {
-      setSeverity(arg.split('=')[1]);
-      continue;
-    }
-    if (arg === '--severity') {
-      setSeverity(args[i + 1]);
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith('--ticket=')) {
-      const value = arg.split('=')[1];
-      if (value) options.ticketHints.push(value);
-      continue;
-    }
-    if (arg === '--ticket') {
-      const value = args[i + 1];
-      if (value) options.ticketHints.push(value);
-      i += 1;
-      continue;
-    }
-
-    options.unknownArgs.push(arg);
   }
+
+  // Validate severity
+  const severityValue = values.severity as string | undefined;
+  if (severityValue) {
+    if (severityValue === 'low' || severityValue === 'medium' || severityValue === 'high') {
+      options.severity = severityValue;
+    } else {
+      options.unknownArgs.push(`--severity ${severityValue}`);
+    }
+  }
+
+  // Collect any unknown positional arguments
+  options.unknownArgs.push(...positionals);
 
   return options;
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const options = parseArgs(args);
+  const options = parseArgsCustom(args);
 
   if (options.showHelp) {
     printUsage();
