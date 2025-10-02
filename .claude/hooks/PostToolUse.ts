@@ -25,5 +25,3 @@ Please fix all TypeScript errors in the file and try again.`,
         }
     }
 }
-
-await Bun.write('.claude/hooks/PostToolUse.json', JSON.stringify(input, null, 2))

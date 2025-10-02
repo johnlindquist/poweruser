@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Accessibility Audit Healer Agent
@@ -26,38 +26,111 @@
  *   bun run agents/accessibility-audit-healer.ts https://example.com --report a11y-report.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type WcagLevel = "A" | "AA" | "AAA";
 
 interface AccessibilityAuditOptions {
   url: string;
   sourcePath?: string;
-  reportFile?: string;
-  wcagLevel?: 'A' | 'AA' | 'AAA';
-  autoFix?: boolean;
+  reportFile: string;
+  wcagLevel: WcagLevel;
+  autoFix: boolean;
 }
 
-async function auditAccessibility(options: AccessibilityAuditOptions) {
-  const {
+const DEFAULT_REPORT_FILE = "accessibility-audit-report.md";
+const DEFAULT_WCAG_LEVEL: WcagLevel = "AA";
+
+function printHelp(): void {
+  console.log(`
+♿ Accessibility Audit Healer
+
+Usage:
+  bun run agents/accessibility-audit-healer.ts <url> [options]
+
+Arguments:
+  url                     Website URL to audit
+
+Options:
+  --src <path>            Path to source code for finding files to fix
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --wcag <level>          WCAG level: A, AA, or AAA (default: ${DEFAULT_WCAG_LEVEL})
+  --auto-fix              Automatically apply safe fixes to source code
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/accessibility-audit-healer.ts https://example.com
+  bun run agents/accessibility-audit-healer.ts https://localhost:3000 --src ./src
+  bun run agents/accessibility-audit-healer.ts https://example.com --src ./src --auto-fix
+  bun run agents/accessibility-audit-healer.ts https://example.com --wcag AAA
+  `);
+}
+
+function parseOptions(): AccessibilityAuditOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error("❌ Error: URL is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  try {
+    new URL(url);
+  } catch (error) {
+    console.error("❌ Error: Invalid URL format");
+    process.exit(1);
+  }
+
+  const rawSource = values.src;
+  const rawReport = values.report;
+  const rawWcag = values.wcag;
+  const autoFix = values["auto-fix"] === true || values.autoFix === true;
+
+  const sourcePath = typeof rawSource === "string" && rawSource.length > 0
+    ? resolve(rawSource)
+    : undefined;
+
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
+
+  const wcagLevel = typeof rawWcag === "string" && rawWcag.length > 0
+    ? (rawWcag.toUpperCase() as WcagLevel)
+    : DEFAULT_WCAG_LEVEL;
+
+  if (!(["A", "AA", "AAA"] as const).includes(wcagLevel)) {
+    console.error("❌ Error: Invalid WCAG level. Must be A, AA, or AAA");
+    process.exit(1);
+  }
+
+  return {
     url,
     sourcePath,
-    reportFile = 'accessibility-audit-report.md',
-    wcagLevel = 'AA',
-    autoFix = false,
-  } = options;
+    reportFile,
+    wcagLevel,
+    autoFix,
+  };
+}
 
-  console.log('♿ Accessibility Audit Healer\n');
-  console.log(`URL: ${url}`);
-  console.log(`WCAG Level: ${wcagLevel}`);
-  if (sourcePath) console.log(`Source Code: ${sourcePath}`);
-  if (autoFix) console.log(`Auto-fix: Enabled`);
-  console.log('');
+function buildPrompt(options: AccessibilityAuditOptions): string {
+  const { url, sourcePath, reportFile, wcagLevel, autoFix } = options;
 
-  const prompt = `
+  return `
 You are an accessibility expert using Chrome DevTools MCP to audit and fix WCAG violations.
 
 Target URL: ${url}
 WCAG Compliance Level: ${wcagLevel}
-${sourcePath ? `Source Code Path: ${sourcePath}` : ''}
+${sourcePath ? `Source Code Path: ${sourcePath}` : ""}
 
 Your tasks:
 1. Open the URL in Chrome using Chrome DevTools MCP
@@ -83,30 +156,27 @@ Your tasks:
    - Specific code examples showing the problem
    - Recommended fix with code example
    - Priority level for fixing
-
 ${sourcePath ? `
 7. If source code path is provided, use Grep to find relevant files:
    - Search for image tags: <img
    - Search for form inputs: <input, <textarea, <select
    - Search for heading tags: <h1, <h2, etc.
    - Provide file:line references for each violation
-
-${autoFix ? `
+` : ""}${autoFix ? `
 8. Auto-fix enabled: Attempt to fix issues by:
    - Using Edit tool to add missing alt attributes
    - Adding ARIA labels to form inputs
    - Fixing heading hierarchy
    - Only make changes to obvious, safe fixes
    - Report all changes made
-` : ''}
-` : ''}
-
+` : ""}
 Generate a comprehensive accessibility audit report and save to "${reportFile}" with:
 - Executive summary with accessibility score (0-100)
 - Violations breakdown by severity and WCAG level
 - Detailed list of issues with code examples
 - Prioritized fix recommendations
 - Before/after comparison if auto-fix was enabled
+- A "Next Steps" checklist for the developer to follow
 
 Format your findings as:
 ## Accessibility Audit Summary
@@ -121,204 +191,98 @@ Format your findings as:
    - Occurrences: [count]
    - Example: [HTML snippet]
    - Fix: [Recommended solution with code]
-   ${sourcePath ? '- Files: [file:line references]' : ''}
+   ${sourcePath ? "- Files: [file:line references]" : ""}
 
 ## Recommended Fixes Priority
 1. [Most important fix with estimated impact]
 2. [Next fix...]
 
-${autoFix ? '## Auto-Fix Results\\n- Files Modified: [count]\\n- Issues Fixed: [count]' : ''}
+${autoFix ? "## Auto-Fix Results\\n- Files Modified: [count]\\n- Issues Fixed: [count]" : ""}
+## Next Steps
+- [Actionable item 1]
+- [Actionable item 2]
+- [Actionable item 3]
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: sourcePath || process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__take_screenshot',
-        'mcp__chrome-devtools__evaluate_script',
-        'Grep',
-        'Glob',
-        'Read',
-        'Write',
-        ...(autoFix ? ['Edit'] : []),
-        'TodoWrite',
-      ],
-      permissionMode: autoFix ? 'acceptEdits' : 'default',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('🔍 Running accessibility audit...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('📸 Capturing violations...');
-                  } else if (toolName === 'Grep') {
-                    console.log('🔎 Searching source code...');
-                  } else if (toolName === 'Edit' && autoFix) {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`🔧 Auto-fixing: ${filePath}`);
-                  } else if (toolName === 'Write') {
-                    console.log(`💾 Generating report: ${reportFile}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Audit complete');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Accessibility audit complete!');
-                console.log(`\n📄 Full report: ${reportFile}`);
-                if (autoFix) {
-                  console.log('\n🔧 Auto-fixes applied - review before committing');
-                }
-                console.log('\nNext steps:');
-                console.log('1. Review the audit report');
-                console.log('2. Prioritize critical issues');
-                console.log('3. Apply recommended fixes');
-                console.log('4. Re-run audit to verify');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 40,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["src", "report", "wcag", "auto-fix", "autoFix", "help", "h"] as const;
 
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        if (!text.includes('tool_use') && text.trim().length > 0) {
-          console.log('\n💡', text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Audit Statistics');
-        console.log('='.repeat(60));
-        console.log(`\nDuration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-        if (message.result) {
-          console.log('\n' + '='.repeat(60));
-          console.log('📝 Summary');
-          console.log('='.repeat(60));
-          console.log('\n' + message.result);
-        }
-      } else {
-        console.error('\n❌ Error:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-♿ Accessibility Audit Healer
-
-Usage:
-  bun run agents/accessibility-audit-healer.ts <url> [options]
-
-Arguments:
-  url                     Website URL to audit
-
-Options:
-  --src <path>            Path to source code for finding files to fix
-  --report <file>         Output file (default: accessibility-audit-report.md)
-  --wcag <level>          WCAG level: A, AA, or AAA (default: AA)
-  --auto-fix              Automatically apply safe fixes to source code
-  --help                  Show this help
-
-Examples:
-  bun run agents/accessibility-audit-healer.ts https://example.com
-  bun run agents/accessibility-audit-healer.ts https://localhost:3000 --src ./src
-  bun run agents/accessibility-audit-healer.ts https://example.com --src ./src --auto-fix
-  bun run agents/accessibility-audit-healer.ts https://example.com --wcag AAA
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL is required');
-  process.exit(1);
-}
+console.log("♿ Accessibility Audit Healer\n");
+console.log(`URL: ${options.url}`);
+console.log(`WCAG Level: ${options.wcagLevel}`);
+if (options.sourcePath) console.log(`Source Code: ${options.sourcePath}`);
+console.log(`Auto-fix: ${options.autoFix ? "Enabled" : "Disabled"}`);
+console.log(`Report: ${options.reportFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "mcp__chrome-devtools__navigate_page",
+  "mcp__chrome-devtools__new_page",
+  "mcp__chrome-devtools__take_snapshot",
+  "mcp__chrome-devtools__take_screenshot",
+  "mcp__chrome-devtools__evaluate_script",
+  "Grep",
+  "Glob",
+  "Read",
+  "Write",
+  ...(options.autoFix ? ["Edit"] : []),
+  "TodoWrite",
+];
+
+const mcpConfig = {
+  mcpServers: {
+    "chrome-devtools": {
+      command: "npx",
+      args: ["chrome-devtools-mcp@latest", "--isolated"],
+    },
+  },
+};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  'mcp-config': JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoFix ? "acceptEdits" : "default",
+  'strict-mcp-config': true,
+  ...(options.autoFix ? { 'dangerously-skip-permissions': true } : {}),
+};
 
 try {
-  new URL(url);
-} catch (error) {
-  console.error('❌ Error: Invalid URL format');
-  process.exit(1);
-}
-
-const options: AccessibilityAuditOptions = { url };
-
-for (let i = 1; i < args.length; i++) {
-  switch (args[i]) {
-    case '--src':
-      options.sourcePath = args[++i];
-      break;
-    case '--report':
-      options.reportFile = args[++i];
-      break;
-    case '--wcag':
-      const level = args[++i] as 'A' | 'AA' | 'AAA';
-      if (!['A', 'AA', 'AAA'].includes(level)) {
-        console.error('❌ Error: Invalid WCAG level. Must be A, AA, or AAA');
-        process.exit(1);
-      }
-      options.wcagLevel = level;
-      break;
-    case '--auto-fix':
-      options.autoFix = true;
-      break;
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Accessibility audit complete!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    if (options.autoFix) {
+      console.log("🔧 Auto-fixes applied - review before committing");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the audit report");
+    console.log("2. Prioritize critical issues");
+    console.log("3. Apply recommended fixes");
+    console.log("4. Re-run audit to verify");
   }
-}
-
-auditAccessibility(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}
