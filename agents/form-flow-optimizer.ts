@@ -33,7 +33,6 @@ interface FormFlowOptions {
   url: string;
   steps?: number;
   reportFile?: string;
-  testData?: boolean;
   mobile?: boolean;
 }
 
@@ -42,7 +41,6 @@ async function optimizeFormFlow(options: FormFlowOptions) {
     url,
     steps = 1,
     reportFile = 'form-flow-optimization.md',
-    testData = true,
     mobile = false,
   } = options;
 

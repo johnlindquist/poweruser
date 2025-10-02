@@ -98,7 +98,7 @@ Start by analyzing the codebase.`
         PreToolUse: [
           {
             hooks: [
-              async (input, toolUseID, { signal }) => {
+              async (input) => {
                 // Monitor file edits and warn about risky changes
                 if (input.hook_event_name === 'PreToolUse') {
                   if (input.tool_name === 'Edit' || input.tool_name === 'Write') {
@@ -132,7 +132,7 @@ Start by analyzing the codebase.`
         PostToolUse: [
           {
             hooks: [
-              async (input, toolUseID, { signal }) => {
+              async (input) => {
                 // Monitor test results
                 if (input.hook_event_name === 'PostToolUse') {
                   if (input.tool_name === 'Bash') {
@@ -160,7 +160,7 @@ Start by analyzing the codebase.`
         Notification: [
           {
             hooks: [
-              async (input, toolUseID, { signal }) => {
+              async (input) => {
                 if (input.hook_event_name === 'Notification') {
                   console.log(`📢 ${input.title || 'Notification'}: ${input.message}`);
                 }
@@ -185,7 +185,7 @@ Start by analyzing the codebase.`
       ],
 
       // Custom tool permission handler for extra safety
-      async canUseTool(toolName, input, { signal, suggestions }) {
+      async canUseTool(toolName, input, _context) {
         // Auto-approve read-only operations
         if (['Read', 'Glob', 'Grep'].includes(toolName)) {
           return {

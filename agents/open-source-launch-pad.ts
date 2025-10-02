@@ -142,13 +142,10 @@ const result = query({
   }
 });
 
-let lastMessage = "";
-
 for await (const message of result) {
   if (message.type === "assistant") {
     for (const block of message.message.content) {
       if (block.type === "text") {
-        lastMessage = block.text;
         console.log(block.text);
       }
     }

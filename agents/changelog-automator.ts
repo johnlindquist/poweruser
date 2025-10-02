@@ -26,7 +26,6 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolve } from 'path';
 import { parseArgs } from 'util';
 
 interface ChangelogOptions {

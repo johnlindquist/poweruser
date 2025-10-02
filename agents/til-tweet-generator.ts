@@ -21,6 +21,9 @@ const DAYS_BACK = parseInt(process.argv[3] || '7');
 const TWEETS_PER_DAY = parseInt(process.argv.find(arg => arg.startsWith('--per-day='))?.split('=')[1] || '12');
 const OUTPUT_PREFIX = process.argv.find(arg => arg.startsWith('--prefix='))?.split('=')[1] || '';
 const SINGLE_FILE = process.argv.includes('--single-file');
+const prefixInstruction = OUTPUT_PREFIX
+  ? `\nWhen saving files, prefix each filename with \"${OUTPUT_PREFIX}\".`
+  : '';
 
 async function main() {
   console.log('🐦 TIL Tweet Generator Agent');
@@ -202,9 +205,9 @@ Structure for each file:
 
 **Step 6: Save results**
 ${SINGLE_FILE ? `
-Write the combined file to ${TWEETS_DIR}/[timestamp]-range.md
+Write the combined file to ${TWEETS_DIR}/[timestamp]-range.md${prefixInstruction}
 ` : `
-Write each daily file to ${TWEETS_DIR}/YYYY-MM-DD.md
+Write each daily file to ${TWEETS_DIR}/YYYY-MM-DD.md${prefixInstruction}
 `}
 
 **Quality Guidelines:**

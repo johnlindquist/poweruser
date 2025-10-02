@@ -19,29 +19,6 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-interface SkillAnalysis {
-  languages: Record<string, number>; // language -> line count
-  frameworks: string[];
-  patterns: string[];
-  experience_level: 'beginner' | 'intermediate' | 'advanced';
-}
-
-interface OpportunityMatch {
-  repo: string;
-  url: string;
-  issue_title: string;
-  issue_url: string;
-  reason: string;
-  difficulty: string;
-}
-
-interface ContributionPlan {
-  skill_analysis: SkillAnalysis;
-  opportunities: OpportunityMatch[];
-  contribution_strategy: string;
-  introduction_template: string;
-}
-
 async function analyzeSkills(targetDir: string): Promise<string> {
   const prompt = `Analyze the codebase in ${targetDir} to identify:
 1. Primary programming languages used (with approximate percentage)

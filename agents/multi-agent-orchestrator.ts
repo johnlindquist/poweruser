@@ -39,7 +39,6 @@ async function orchestrate(options: OrchestratorOptions) {
   console.log(`⚙️  Max Parallel Agents: ${maxParallelAgents}\n`);
 
   const subtaskResults: SubtaskResult[] = [];
-  let currentPhase = 'planning';
 
   // Phase 1: Analyze and decompose the task
   const planningPrompt = `
@@ -131,7 +130,6 @@ Important: Make subtasks as independent as possible to maximize parallelization.
 
   // Phase 2: Execute subtasks in parallel
   console.log('🚀 Phase 2: Parallel Execution\n');
-  currentPhase = 'execution';
 
   const subtaskPromises = subtasks.map((subtask, idx) =>
     executeSubtask(subtask, idx + 1, verbose)
@@ -153,7 +151,6 @@ Important: Make subtasks as independent as possible to maximize parallelization.
 
   // Phase 3: Merge results
   console.log('🔄 Phase 3: Result Merging & Synthesis\n');
-  currentPhase = 'merging';
 
   const mergePrompt = `
 You are a result synthesizer. Multiple specialized agents have completed parallel subtasks. Your job is to intelligently merge their results into a cohesive final output.
