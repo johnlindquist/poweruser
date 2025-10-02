@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Chrome Font Performance Analyzer Agent
@@ -6,7 +6,7 @@
  * Analyzes web font loading strategy and performance:
  * - Identifies all fonts used on the page
  * - Measures font loading times and render-blocking behavior
- * - Calculates FOIT (Flash of Invisible Text) and FOUT (Flash of Unstyled Text)
+ * - Calculates FOIT and FOUT
  * - Checks font-display values
  * - Identifies unused font weights/styles
  * - Suggests optimizations (font-display, preload, subsetting)
@@ -15,20 +15,92 @@
  *   bun run agents/chrome-font-performance-analyzer.ts <url> [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
 interface FontAnalyzerOptions {
   url: string;
-  reportFile?: string;
+  reportFile: string;
 }
 
-async function analyzeFontPerformance(options: FontAnalyzerOptions) {
-  const { url, reportFile = 'font-performance-report.md' } = options;
+const DEFAULT_REPORT_FILE = 'font-performance-report.md';
 
-  console.log('🔤 Chrome Font Performance Analyzer\n');
-  console.log(`URL: ${url}\n`);
+function printHelp(): void {
+  console.log(`
+🔤 Chrome Font Performance Analyzer
 
-  const prompt = `
+Usage:
+  bun run agents/chrome-font-performance-analyzer.ts <url> [options]
+
+Options:
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+if (positionals.length === 0) {
+  console.error('❌ Error: URL required');
+  printHelp();
+  process.exit(1);
+}
+
+const urlCandidate = positionals[0]!;
+
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL format');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+const options: FontAnalyzerOptions = {
+  url: urlCandidate,
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+};
+
+console.log('🔤 Chrome Font Performance Analyzer\n');
+console.log(`URL: ${options.url}\n`);
+
+function buildPrompt(opts: FontAnalyzerOptions): string {
+  const { url, reportFile } = opts;
+
+  return `
 You are a web font performance expert using Chrome DevTools MCP.
 
 Target URL: ${url}
@@ -42,7 +114,7 @@ Tasks:
    () => {
      const fonts = [];
      const fontFaces = Array.from(document.fonts);
-     
+
      fontFaces.forEach(font => {
        fonts.push({
          family: font.family,
@@ -53,10 +125,9 @@ Tasks:
        });
      });
 
-     // Check font-display in stylesheets
      const styles = Array.from(document.styleSheets);
      const fontDisplayRules = [];
-     
+
      styles.forEach(sheet => {
        try {
          const rules = Array.from(sheet.cssRules || []);
@@ -109,7 +180,7 @@ Generate report "${reportFile}":
 
 #### 🔴 Render-Blocking Fonts ([count])
 - [Font name] - [X]ms blocking
-  - Fix: Add \`font-display: swap\`
+  - Fix: Add 'font-display: swap'
 
 #### ⚠️  Missing font-display ([count] fonts)
 - Causes FOIT (Flash of Invisible Text)
@@ -152,7 +223,7 @@ Generate report "${reportFile}":
 
 ### Implementation Priority
 1. Add font-display: swap (5 min) → +[X]ms faster
-2. Preload critical fonts (10 min) → +[Y]ms faster  
+2. Preload critical fonts (10 min) → +[Y]ms faster
 3. Remove unused weights (30 min) → -[Z]KB
 4. Implement subsetting (2 hours) → -[X]KB
 
@@ -164,67 +235,49 @@ Generate report "${reportFile}":
 - [ ] Fonts are subset
 - [ ] Using system fonts as fallback
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__performance_start_trace',
-        'mcp__chrome-devtools__performance_stop_trace',
-        'mcp__chrome-devtools__list_network_requests',
-        'mcp__chrome-devtools__evaluate_script',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 25,
-      model: 'claude-sonnet-4-5-20250929',
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__performance_start_trace',
+  'mcp__chrome-devtools__performance_stop_trace',
+  'mcp__chrome-devtools__list_network_requests',
+  'mcp__chrome-devtools__evaluate_script',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
+  },
+};
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n📄 Report: ${reportFile}`);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n📄 Report: ${options.reportFile}`);
     }
-  }
-}
-
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🔤 Chrome Font Performance Analyzer
-
-Usage:
-  bun run agents/chrome-font-performance-analyzer.ts <url> [options]
-
-Options:
-  --report <file>         Output file (default: font-performance-report.md)
-  --help                  Show this help
-  `);
-  process.exit(0);
-}
-
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL required');
-  process.exit(1);
-}
-
-const options: FontAnalyzerOptions = { url };
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1 && args[reportIndex + 1]) options.reportFile = args[reportIndex + 1];
-
-analyzeFontPerformance(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

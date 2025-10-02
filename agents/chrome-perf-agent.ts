@@ -1,67 +1,163 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Chrome Performance Analysis Agent
- *
- * This agent uses Chrome DevTools MCP to analyze website performance:
- * - Runs performance traces with Core Web Vitals (LCP, CLS, FID)
- * - Analyzes render delays and JavaScript execution bottlenecks
- * - Identifies third-party script impact
- * - Examines network waterfall and resource loading
- * - Generates actionable optimization recommendations
- *
- * Usage:
- *   bun run agents/chrome-perf-agent.ts <url> [options]
- *
- * Examples:
- *   # Basic performance analysis
- *   bun run agents/chrome-perf-agent.ts https://example.com
- *
- *   # With network throttling
- *   bun run agents/chrome-perf-agent.ts https://example.com --throttle slow3g
- *
- *   # Generate optimization plan
- *   bun run agents/chrome-perf-agent.ts https://example.com --generate-plan
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
+
+type NetworkThrottle = 'slow3g' | 'fast3g' | 'slow4g' | 'fast4g' | 'none';
 
 interface ChromePerfOptions {
   url: string;
-  throttle?: 'slow3g' | 'fast3g' | 'slow4g' | 'fast4g' | 'none';
-  cpuThrottle?: number; // 1-20x slowdown
-  mobile?: boolean;
-  generatePlan?: boolean;
+  throttle: NetworkThrottle;
+  cpuThrottle?: number;
+  mobile: boolean;
+  generatePlan: boolean;
   outputFile?: string;
 }
 
-async function analyzePerformance(options: ChromePerfOptions) {
-  const {
-    url,
-    throttle = 'none',
+const VALID_THROTTLES: NetworkThrottle[] = ['slow3g', 'fast3g', 'slow4g', 'fast4g', 'none'];
+const DEFAULT_PLAN_FILE = 'perf-optimization-plan.md';
+
+function printHelp(): void {
+  console.log(`
+🚀 Chrome Performance Analysis Agent
+
+Usage:
+  bun run agents/chrome-perf-agent.ts <url> [options]
+
+Options:
+  --throttle <type>       Network throttling (${VALID_THROTTLES.join('|')})
+  --cpu <multiplier>      CPU throttling (1-20x slowdown)
+  --mobile                Simulate mobile viewport (375x667)
+  --generate-plan         Produce a detailed optimization plan
+  --output <file>         Custom plan filename (default: ${DEFAULT_PLAN_FILE})
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+if (positionals.length === 0) {
+  console.error('❌ Error: URL is required');
+  printHelp();
+  process.exit(1);
+}
+
+const urlCandidate = positionals[0]!;
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL format');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanFlag(name: string): boolean {
+  if (values[name] === true) return true;
+  if (values[name] === false) return false;
+  return argv.includes(`--${name}`);
+}
+
+function readNumberFlag(name: string): number | undefined {
+  const raw = readStringFlag(name);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    console.error(`❌ Error: --${name} must be a number`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function parseOptions(): ChromePerfOptions {
+  const throttleRaw = readStringFlag('throttle');
+  const throttle = (throttleRaw ?? 'none') as NetworkThrottle;
+
+  if (!VALID_THROTTLES.includes(throttle)) {
+    console.error(`❌ Error: Invalid throttle option. Must be one of: ${VALID_THROTTLES.join(', ')}`);
+    process.exit(1);
+  }
+
+  const cpuThrottle = readNumberFlag('cpu');
+  if (cpuThrottle !== undefined && (cpuThrottle < 1 || cpuThrottle > 20)) {
+    console.error('❌ Error: --cpu must be between 1 and 20');
+    process.exit(1);
+  }
+
+  const generatePlan = readBooleanFlag('generate-plan');
+  const outputFile = readStringFlag('output');
+
+  return {
+    url: urlCandidate,
+    throttle,
     cpuThrottle,
-    mobile = false,
-    generatePlan = false,
+    mobile: readBooleanFlag('mobile'),
+    generatePlan,
     outputFile,
-  } = options;
+  };
+}
 
-  console.log('🚀 Chrome Performance Analysis Agent\n');
-  console.log(`URL: ${url}`);
-  if (throttle !== 'none') console.log(`Network Throttling: ${throttle}`);
-  if (cpuThrottle) console.log(`CPU Throttling: ${cpuThrottle}x slowdown`);
-  if (mobile) console.log(`Device: Mobile simulation`);
-  console.log('');
+const options = parseOptions();
+const planFile = options.outputFile ?? DEFAULT_PLAN_FILE;
 
-  const prompt = `
+console.log('🚀 Chrome Performance Analysis Agent\n');
+console.log(`URL: ${options.url}`);
+console.log(`Network throttling: ${options.throttle}`);
+if (options.cpuThrottle) console.log(`CPU throttling: ${options.cpuThrottle}x slowdown`);
+console.log(`Device: ${options.mobile ? 'Mobile' : 'Desktop'}`);
+console.log(`Optimization plan: ${options.generatePlan ? 'enabled' : 'disabled'}`);
+if (options.generatePlan) console.log(`Plan file: ${planFile}`);
+console.log('');
+
+function buildPrompt(opts: ChromePerfOptions): string {
+  const { url, throttle, cpuThrottle, mobile, generatePlan } = opts;
+
+  return `
 You are a web performance expert using Chrome DevTools MCP to analyze website performance.
 
 Target URL: ${url}
 
 Your tasks:
 1. Open the URL in Chrome using the Chrome DevTools MCP
-2. ${throttle !== 'none' ? `Apply ${throttle} network throttling` : ''}
-3. ${cpuThrottle ? `Apply ${cpuThrottle}x CPU throttling` : ''}
-4. ${mobile ? 'Resize to mobile viewport (375x667)' : ''}
+2. ${throttle !== 'none' ? `Apply ${throttle} network throttling` : 'Use default network conditions'}
+3. ${cpuThrottle ? `Apply ${cpuThrottle}x CPU throttling` : 'Keep CPU at baseline speed'}
+4. ${mobile ? 'Resize viewport to 375x667 (mobile simulation)' : 'Keep default desktop viewport'}
 5. Run a performance trace with auto-reload
 6. Analyze the performance metrics:
    - LCP (Largest Contentful Paint)
@@ -74,7 +170,6 @@ Your tasks:
 10. List all network requests filtered by JavaScript and document types
 11. Identify the top 5 performance bottlenecks with specific file names and sizes
 12. Provide actionable recommendations for each bottleneck
-
 ${generatePlan ? `
 13. Generate a comprehensive optimization plan markdown document with:
     - Executive summary with current metrics
@@ -82,9 +177,8 @@ ${generatePlan ? `
     - Prioritized optimization recommendations with code examples
     - Implementation timeline (Week 1: Quick wins, Week 2: Major optimizations, etc.)
     - Success metrics and testing checklist
-14. ${outputFile ? `Save the plan to "${outputFile}"` : 'Save the plan to "perf-optimization-plan.md"'}
+14. Save the plan to "${planFile}"
 ` : ''}
-
 Format your findings as:
 ## Performance Metrics
 - LCP: [value]ms [status: Good/Needs Improvement/Poor]
@@ -109,262 +203,60 @@ Format your findings as:
 
 ${generatePlan ? '## Optimization Plan\n[Full markdown document saved to file]' : ''}
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      // Use Chrome DevTools MCP with isolated mode
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      // Allow necessary tools
-      allowedTools: [
-        // Chrome DevTools MCP tools
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__list_pages',
-        'mcp__chrome-devtools__performance_start_trace',
-        'mcp__chrome-devtools__performance_stop_trace',
-        'mcp__chrome-devtools__performance_analyze_insight',
-        'mcp__chrome-devtools__list_network_requests',
-        'mcp__chrome-devtools__get_network_request',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__resize_page',
-        'mcp__chrome-devtools__emulate_network',
-        'mcp__chrome-devtools__emulate_cpu',
-        'mcp__chrome-devtools__list_console_messages',
-        // File tools for saving reports
-        'Write',
-        'Read',
-        'TodoWrite',
-      ],
-      // Auto-accept file writes for report generation
-      permissionMode: 'acceptEdits',
-      // Add hooks to track progress
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__performance_start_trace') {
-                    console.log('🔄 Starting performance trace...');
-                  } else if (toolName === 'mcp__chrome-devtools__performance_analyze_insight') {
-                    const insightName = (input.tool_input as any).insightName;
-                    console.log(`📊 Analyzing insight: ${insightName}`);
-                  } else if (toolName === 'mcp__chrome-devtools__list_network_requests') {
-                    console.log('🌐 Fetching network requests...');
-                  } else if (toolName === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`💾 Saving report to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__performance_stop_trace') {
-                    console.log('✅ Performance trace complete');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved successfully');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Performance analysis complete!');
-                if (generatePlan) {
-                  console.log(`\n📄 Optimization plan saved to: ${outputFile || 'perf-optimization-plan.md'}`);
-                }
-                console.log('\nNext steps:');
-                console.log('1. Review the performance bottlenecks identified');
-                console.log('2. Prioritize fixes based on impact and effort');
-                console.log('3. Implement quick wins first');
-                console.log('4. Re-run this analysis after optimizations');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      // Configure max turns to prevent infinite loops
-      maxTurns: 30,
-      model: 'claude-sonnet-4-5-20250929',
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__list_pages',
+  'mcp__chrome-devtools__performance_start_trace',
+  'mcp__chrome-devtools__performance_stop_trace',
+  'mcp__chrome-devtools__performance_analyze_insight',
+  'mcp__chrome-devtools__list_network_requests',
+  'mcp__chrome-devtools__get_network_request',
+  'mcp__chrome-devtools__take_snapshot',
+  'mcp__chrome-devtools__resize_page',
+  'mcp__chrome-devtools__emulate_network',
+  'mcp__chrome-devtools__emulate_cpu',
+  'mcp__chrome-devtools__list_console_messages',
+  'Write',
+  'Read',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
-
-  // Stream results
-  let finalReport = '';
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        // Only show analysis output, not tool responses
-        const text = textContent.text;
-        if (
-          !text.includes('tool_use') &&
-          !text.includes('function_calls') &&
-          text.trim().length > 0
-        ) {
-          console.log('\n💡', text);
-          finalReport += text + '\n';
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Analysis Statistics');
-        console.log('='.repeat(60));
-        console.log(`\nDuration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`API calls: ${(message.duration_api_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Turns: ${message.num_turns}`);
-        console.log(
-          `Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-
-        // Show final summary
-        if (message.result) {
-          console.log('\n' + '='.repeat(60));
-          console.log('📝 Final Summary');
-          console.log('='.repeat(60));
-          console.log('\n' + message.result);
-        }
-      } else {
-        console.error('\n❌ Error during performance analysis:', message.subtype);
-      }
-    }
-  }
-}
-
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🚀 Chrome Performance Analysis Agent
-
-Usage:
-  bun run agents/chrome-perf-agent.ts <url> [options]
-
-Arguments:
-  url                     Website URL to analyze
-
-Options:
-  --throttle <type>       Network throttling (slow3g|fast3g|slow4g|fast4g|none)
-  --cpu <multiplier>      CPU throttling (1-20x slowdown, default: none)
-  --mobile                Simulate mobile device viewport
-  --generate-plan         Generate comprehensive optimization plan
-  --output <file>         Output file for optimization plan (default: perf-optimization-plan.md)
-  --help                  Show this help message
-
-Examples:
-  # Basic performance analysis
-  bun run agents/chrome-perf-agent.ts https://example.com
-
-  # Simulate slow mobile connection
-  bun run agents/chrome-perf-agent.ts https://example.com --throttle slow3g --mobile
-
-  # Generate full optimization plan
-  bun run agents/chrome-perf-agent.ts https://example.com --generate-plan
-
-  # Analyze with CPU throttling (4x slowdown)
-  bun run agents/chrome-perf-agent.ts https://example.com --cpu 4
-
-  # Save plan to custom file
-  bun run agents/chrome-perf-agent.ts https://example.com --generate-plan --output my-perf-plan.md
-
-Core Web Vitals Targets:
-  LCP (Largest Contentful Paint): < 2.5s (Good), < 4.0s (Needs Improvement)
-  CLS (Cumulative Layout Shift):  < 0.1 (Good), < 0.25 (Needs Improvement)
-  FID (First Input Delay):        < 100ms (Good), < 300ms (Needs Improvement)
-  `);
-  process.exit(0);
-}
-
-const url = args[0];
-
-if (!url) {
-  console.error('❌ Error: URL is required');
-  process.exit(1);
-}
-
-// Validate URL
-try {
-  new URL(url);
-} catch (error) {
-  console.error('❌ Error: Invalid URL format');
-  process.exit(1);
-}
-
-// Parse CLI options
-const options: ChromePerfOptions = {
-  url,
-  throttle: 'none',
-  mobile: false,
-  generatePlan: false,
+  },
 };
 
-for (let i = 1; i < args.length; i++) {
-  switch (args[i]) {
-    case '--throttle':
-      options.throttle = args[++i] as any;
-      break;
-    case '--cpu':
-      options.cpuThrottle = parseInt(args[++i] || '1', 10);
-      break;
-    case '--mobile':
-      options.mobile = true;
-      break;
-    case '--generate-plan':
-      options.generatePlan = true;
-      break;
-    case '--output':
-      options.outputFile = args[++i];
-      break;
-  }
-}
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'acceptEdits',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
 
-// Validate throttle option
-const validThrottles = ['slow3g', 'fast3g', 'slow4g', 'fast4g', 'none'];
-if (options.throttle && !validThrottles.includes(options.throttle)) {
-  console.error(
-    `❌ Error: Invalid throttle option. Must be one of: ${validThrottles.join(', ')}`
-  );
-  process.exit(1);
-}
-
-// Validate CPU throttle
-if (options.cpuThrottle && (options.cpuThrottle < 1 || options.cpuThrottle > 20)) {
-  console.error('❌ Error: CPU throttle must be between 1 and 20');
-  process.exit(1);
-}
-
-// Run the performance analysis
-analyzePerformance(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log('\n✨ Performance analysis complete!');
+      if (options.generatePlan) {
+        console.log(`📄 Optimization plan: ${planFile}`);
+      }
+    }
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

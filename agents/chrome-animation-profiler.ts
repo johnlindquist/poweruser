@@ -22,7 +22,7 @@
  *   bun run agents/chrome-animation-profiler.ts https://example.com --report my-report.md
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, getPositionals, parsedArgs } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface AnimationProfileOptions {
@@ -53,7 +53,8 @@ Examples:
 }
 
 function parseOptions(): AnimationProfileOptions | null {
-  const { values, positionals } = parsedArgs;
+  const values = parsedArgs.values as Record<string, unknown>;
+  const positionals = getPositionals();
   const help = values.help === true || values.h === true;
 
   if (help) {
@@ -155,17 +156,6 @@ Format your report as:
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["report", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
-
 const options = parseOptions();
 if (!options) {
   process.exit(0);
@@ -197,8 +187,6 @@ const mcpConfig = {
     },
   },
 };
-
-removeAgentFlags();
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

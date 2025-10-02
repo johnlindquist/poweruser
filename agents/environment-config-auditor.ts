@@ -1,54 +1,131 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Environment Config Auditor Agent
- *
- * A practical everyday agent that prevents configuration mishaps and security issues:
- * - Compares .env.example against actual .env files to identify missing or extra variables
- * - Validates environment variables against code usage to catch typos and unused configs
- * - Checks for accidentally committed secrets in git history and suggests remediation
- * - Verifies production configs match expected schema without exposing actual values
- * - Detects dangerous defaults (DEBUG=true, weak keys) that shouldn't be in production
- * - Generates migration guides when config structure changes between environments
- * - Creates secure .env templates for new team members with clear documentation
- *
- * Usage:
- *   bun run agents/environment-config-auditor.ts [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from 'node:path';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
-interface AuditorOptions {
-  envPath?: string;
-  examplePath?: string;
-  checkGitHistory?: boolean;
-  checkDangerousDefaults?: boolean;
-  generateMigrationGuide?: boolean;
-  generateSecureTemplate?: boolean;
-  productionMode?: boolean;
+type AuditorOptions = {
+  envPath: string;
+  examplePath: string;
+  checkGitHistory: boolean;
+  checkDangerousDefaults: boolean;
+  generateMigrationGuide: boolean;
+  generateSecureTemplate: boolean;
+  productionMode: boolean;
+  projectPath: string;
+};
+
+const DEFAULT_ENV = '.env';
+const DEFAULT_EXAMPLE = '.env.example';
+const MIGRATION_GUIDE = 'MIGRATION.md';
+const TEMPLATE_FILE = '.env.template';
+
+function printHelp(): void {
+  console.log(`
+🔒 Environment Config Auditor
+
+Usage:
+  bun run agents/environment-config-auditor.ts [project-path] [options]
+
+Options:
+  --env <path>               Path to .env file (default: ${DEFAULT_ENV})
+  --example <path>           Path to .env.example file (default: ${DEFAULT_EXAMPLE})
+  --no-git-history           Skip git history secret scan
+  --no-dangerous-defaults    Skip dangerous defaults detection
+  --generate-migration       Produce ${MIGRATION_GUIDE}
+  --generate-template        Produce secure ${TEMPLATE_FILE}
+  --production               Audit using production-mode strictness
+  --help, -h                 Show this help message
+`);
 }
 
-async function auditEnvironmentConfig(options: AuditorOptions) {
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function hasFlag(name: string): boolean {
+  if (values[name] === true) return true;
+  if (values[name] === false) return false;
+  return argv.includes(`--${name}`);
+}
+
+function parseOptions(): AuditorOptions {
+  const projectRaw = positionals[0] ? resolve(positionals[0]!) : process.cwd();
+  const envPath = resolve(projectRaw, readStringFlag('env') ?? DEFAULT_ENV);
+  const examplePath = resolve(projectRaw, readStringFlag('example') ?? DEFAULT_EXAMPLE);
+
+  return {
+    projectPath: projectRaw,
+    envPath,
+    examplePath,
+    checkGitHistory: !hasFlag('no-git-history'),
+    checkDangerousDefaults: !hasFlag('no-dangerous-defaults'),
+    generateMigrationGuide: hasFlag('generate-migration'),
+    generateSecureTemplate: hasFlag('generate-template'),
+    productionMode: hasFlag('production'),
+  };
+}
+
+const options = parseOptions();
+
+console.log('🔒 Environment Config Auditor\n');
+console.log(`Example file: ${options.examplePath}`);
+console.log(`Environment file: ${options.envPath}`);
+console.log(`Check git history: ${options.checkGitHistory ? '✅' : '❌'}`);
+console.log(`Check dangerous defaults: ${options.checkDangerousDefaults ? '✅' : '❌'}`);
+console.log(`Generate migration guide: ${options.generateMigrationGuide ? '✅' : '❌'}`);
+console.log(`Generate secure template: ${options.generateSecureTemplate ? '✅' : '❌'}`);
+console.log(`Production mode: ${options.productionMode ? '✅' : '❌'}`);
+console.log(`Project path: ${options.projectPath}\n`);
+
+function buildPrompt(opts: AuditorOptions): string {
   const {
-    envPath = '.env',
-    examplePath = '.env.example',
-    checkGitHistory = true,
-    checkDangerousDefaults = true,
-    generateMigrationGuide = false,
-    generateSecureTemplate = false,
-    productionMode = false,
-  } = options;
+    envPath,
+    examplePath,
+    checkGitHistory,
+    checkDangerousDefaults,
+    generateMigrationGuide,
+    generateSecureTemplate,
+    productionMode,
+  } = opts;
 
-  console.log('🔒 Environment Config Auditor\n');
-  console.log(`Example file: ${examplePath}`);
-  console.log(`Environment file: ${envPath}`);
-  console.log(`Check git history: ${checkGitHistory ? '✅' : '❌'}`);
-  console.log(`Check dangerous defaults: ${checkDangerousDefaults ? '✅' : '❌'}`);
-  console.log(`Generate migration guide: ${generateMigrationGuide ? '✅' : '❌'}`);
-  console.log(`Generate secure template: ${generateSecureTemplate ? '✅' : '❌'}`);
-  console.log(`Production mode: ${productionMode ? '✅' : '❌'}\n`);
-
-  const prompt = `
+  return `
 You are an environment configuration security auditor. Your task is to thoroughly analyze environment configuration files and identify security issues, misconfigurations, and provide remediation guidance.
 
 COMPREHENSIVE AUDIT STEPS:
@@ -120,7 +197,7 @@ ${
    - Provide before/after examples for each change
    - Include commands to update configs safely
    - Suggest rollback procedures if needed
-   - Save as MIGRATION.md
+   - Save as ${MIGRATION_GUIDE}
 `
     : ''
 }
@@ -129,7 +206,7 @@ ${
   generateSecureTemplate
     ? `
 7. **Secure Template Generation**
-   - Create a comprehensive .env.template file
+   - Create a comprehensive ${TEMPLATE_FILE}
    - Include all variables with secure placeholder values
    - Add detailed inline comments explaining each variable
    - Provide security guidance (e.g., "use strong random value", "never commit this file")
@@ -156,213 +233,61 @@ Generate a comprehensive security audit report with:
 5. **Remediation Guide**: Step-by-step fix instructions
 6. **Configuration Health Score**: Overall rating (0-100)
 
-Use clear formatting, emojis for severity levels, and specific file/line references.
-
 ${productionMode ? '\n⚠️  PRODUCTION MODE: Apply strictest security standards. Any critical issues must be reported prominently.\n' : ''}
-
-Begin your comprehensive security audit now.
-`.trim();
-
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash', 'TodoWrite'],
-      // Accept edits if generating files, otherwise default permissions
-      permissionMode: generateMigrationGuide || generateSecureTemplate ? 'acceptEdits' : 'default',
-      model: 'claude-sonnet-4-5-20250929',
-      maxThinkingTokens: 8000,
-      maxTurns: 15,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Read') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`📖 Reading ${toolInput.file_path}`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`🔍 Searching for: ${toolInput.pattern}`);
-                  } else if (input.tool_name === 'Bash') {
-                    const toolInput = input.tool_input as any;
-                    // Don't print sensitive commands
-                    if (!toolInput.command.includes('password') && !toolInput.command.includes('secret')) {
-                      console.log(`⚡ Running: ${toolInput.command.substring(0, 60)}${toolInput.command.length > 60 ? '...' : ''}`);
-                    } else {
-                      console.log(`⚡ Running security check...`);
-                    }
-                  } else if (input.tool_name === 'Write') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`✍️  Generating ${toolInput.file_path}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    console.log(`✅ File created successfully`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolResponse = input.tool_response as any;
-                    if (toolResponse.matches) {
-                      console.log(`   Found ${toolResponse.matches.length} references`);
-                    } else if (toolResponse.files) {
-                      console.log(`   Found matches in ${toolResponse.files.length} files`);
-                    }
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  const startTime = Date.now();
-
-  // Stream results
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        // Show progress for key actions
-        if (
-          text.includes('Scanning') ||
-          text.includes('Analyzing') ||
-          text.includes('Checking') ||
-          text.includes('Validating')
-        ) {
-          process.stdout.write('.');
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      if (message.subtype === 'success') {
-        console.log('\n\n' + '='.repeat(80));
-        console.log('🔒 ENVIRONMENT CONFIGURATION SECURITY AUDIT REPORT');
-        console.log('='.repeat(80));
-        console.log('\n' + message.result);
-        console.log('\n' + '='.repeat(80));
-        console.log(`⚡ Completed in ${elapsedTime}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(
-          `📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`🚀 Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-
-        // Exit with error code if critical issues found in production mode
-        if (productionMode && (message.result.includes('🔴') || message.result.includes('CRITICAL'))) {
-          console.log('\n🔴 CRITICAL SECURITY ISSUES FOUND IN PRODUCTION MODE');
-          console.log('Address these issues immediately before deploying.');
-          process.exit(1);
-        }
-      } else {
-        console.error('\n❌ Error during audit:', message.subtype);
-        process.exit(1);
-      }
-    }
-  }
+`;
 }
 
-// CLI interface
-const args = process.argv.slice(2);
+const systemPrompt = `You are an environment configuration security auditor focused on preventing configuration mishaps and secret leaks.
 
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-🔒 Environment Config Auditor
+Your responsibilities include:
+1. Comparing environment template files (e.g., .env.example) with actual environment files to spot missing or extra variables
+2. Validating environment variable usage across the codebase to catch typos and unused definitions
+3. Scanning git history for accidentally committed secrets when requested
+4. Detecting dangerous defaults or insecure settings, especially when auditing production environments
+5. Ensuring values follow expected schemas (URLs, booleans, ports, emails, JWT secrets, etc.)
+6. Generating migration guides or secure templates when asked, with clear remediation steps and documentation
 
-A comprehensive security audit tool for environment configuration files.
+Always provide concrete, security-focused guidance with severity ratings, file references, and remediation instructions.`;
 
-Usage:
-  bun run agents/environment-config-auditor.ts [options]
+const prompt = buildPrompt(options);
 
-Options:
-  --env <path>              Path to .env file (default: .env)
-  --example <path>          Path to .env.example file (default: .env.example)
-  --no-git-history         Skip checking git history for leaked secrets
-  --no-dangerous-defaults  Skip checking for dangerous default values
-  --generate-migration     Generate migration guide for config changes
-  --generate-template      Generate secure .env template for team members
-  --production             Enable production mode (strict security checks)
-  --help, -h               Show this help message
+const claudeSettings: Settings = {};
 
-Examples:
-  # Basic security audit
-  bun run agents/environment-config-auditor.ts
+const allowedTools = [
+  'Read',
+  'Write',
+  'TodoWrite',
+  'Grep',
+  'Glob',
+  'Bash',
+  'WebSearch',
+  'WebFetch',
+];
 
-  # Full audit with migration guide
-  bun run agents/environment-config-auditor.ts --generate-migration --generate-template
-
-  # Production mode audit (strict)
-  bun run agents/environment-config-auditor.ts --production
-
-  # Quick audit without git history scan
-  bun run agents/environment-config-auditor.ts --no-git-history
-
-Features:
-  ✅ Detects missing/extra environment variables
-  ✅ Validates variable formats and schemas
-  ✅ Scans git history for accidentally committed secrets
-  ✅ Identifies dangerous defaults (DEBUG=true, weak keys)
-  ✅ Checks for typos and unused variables
-  ✅ Generates secure templates and migration guides
-  ✅ Provides remediation steps for all issues
-  `);
-  process.exit(0);
-}
-
-// Parse options
-const options: AuditorOptions = {
-  checkGitHistory: true,
-  checkDangerousDefaults: true,
-  generateMigrationGuide: false,
-  generateSecureTemplate: false,
-  productionMode: false,
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': options.generateMigrationGuide || options.generateSecureTemplate ? 'acceptEdits' : 'default',
+  'append-system-prompt': systemPrompt,
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--env':
-      options.envPath = args[++i];
-      break;
-    case '--example':
-      options.examplePath = args[++i];
-      break;
-    case '--no-git-history':
-      options.checkGitHistory = false;
-      break;
-    case '--no-dangerous-defaults':
-      options.checkDangerousDefaults = false;
-      break;
-    case '--generate-migration':
-      options.generateMigrationGuide = true;
-      break;
-    case '--generate-template':
-      options.generateSecureTemplate = true;
-      break;
-    case '--production':
-      options.productionMode = true;
-      break;
-  }
+const previousCwd = process.cwd();
+if (options.projectPath !== previousCwd) {
+  process.chdir(options.projectPath);
 }
 
-// Run the auditor
-auditEnvironmentConfig(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (options.projectPath !== previousCwd) {
+      process.chdir(previousCwd);
+    }
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    if (options.projectPath !== previousCwd) {
+      process.chdir(previousCwd);
+    }
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

@@ -18,14 +18,16 @@
  *   --help, -h         Show this help
  */
 
-import { resolve } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { claude, parsedArgs } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type MigrationOptions = {
-  targetPath: string;
+  targetPaths: string[];
   model: string;
   applyChanges: boolean;
+  runAll: boolean;
 };
 
 const DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
@@ -41,10 +43,47 @@ Arguments:
   agent-path             Path to the agent file to migrate
 
 Options:
+  --all                 Migrate every agent missing the shared lib import
   --apply                Allow automatic edits using the Edit tool
   --model <name>         Override the Claude model alias (default: ${DEFAULT_MODEL})
   --help, -h             Show this help message
 `);
+}
+
+function findAgentsMissingLibImport(rootDir: string): string[] {
+  const agentsDir = resolve(rootDir, "agents");
+  let entries: string[];
+
+  try {
+    entries = readdirSync(agentsDir);
+  } catch (error) {
+    console.error("❌ Error reading agents directory:", error);
+    process.exit(1);
+  }
+
+  const targets: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".ts")) continue;
+
+    const fullPath = join(agentsDir, entry);
+    try {
+      if (statSync(fullPath).isDirectory()) {
+        continue;
+      }
+    } catch (error) {
+      console.warn(`⚠️  Skipping ${fullPath}:`, error);
+      continue;
+    }
+
+    const content = readFileSync(fullPath, "utf8");
+
+    if (!content.includes("./lib")) {
+      targets.push(fullPath);
+    }
+  }
+
+  return targets.sort((a, b) => a.localeCompare(b));
 }
 
 function parseOptions(): MigrationOptions | null {
@@ -56,27 +95,43 @@ function parseOptions(): MigrationOptions | null {
     return null;
   }
 
-  const targetArg = positionals[0];
-  if (!targetArg) {
-    console.error("❌ Error: agent path is required");
-    printHelp();
-    process.exit(1);
+  const runAll = values.all === true;
+  let targetPaths: string[] = [];
+
+  if (runAll) {
+    if (positionals.length > 0) {
+      console.warn("⚠️  Ignoring positional arguments because --all was provided.");
+    }
+
+    targetPaths = findAgentsMissingLibImport(process.cwd());
+
+    if (targetPaths.length === 0) {
+      console.log("✅ All agents already import the shared lib.");
+      return null;
+    }
+  } else {
+    const targetArg = positionals[0];
+    if (!targetArg) {
+      console.error("❌ Error: agent path is required");
+      printHelp();
+      process.exit(1);
+    }
+
+    targetPaths = [resolve(process.cwd(), targetArg)];
   }
 
-  const targetPath = resolve(process.cwd(), targetArg);
   const model = typeof values.model === "string" && values.model.length > 0 ? values.model : DEFAULT_MODEL;
   const applyChanges = values.apply === true;
 
   return {
-    targetPath,
+    targetPaths,
     model,
     applyChanges,
+    runAll,
   };
 }
 
-function buildPrompt(options: MigrationOptions): string {
-  const { targetPath, applyChanges } = options;
-
+function buildPrompt(targetPath: string, applyChanges: boolean): string {
   return `
 You are a migration assistant tasked with updating an existing Claude agent to match the shared lib patterns.
 
@@ -134,7 +189,7 @@ When finished, summarize the changes and include any follow-up steps.
 
 function removeAgentFlags(): void {
   const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["apply", "model", "help", "h"] as const;
+  const agentKeys = ["apply", "model", "help", "h", "all"] as const;
 
   for (const key of agentKeys) {
     if (key in values) {
@@ -149,12 +204,19 @@ if (!options) {
 }
 
 console.log("🛠️ Agent Lib Migrator\n");
-console.log(`Target: ${options.targetPath}`);
+if (options.runAll) {
+  console.log(`Targets to migrate: ${options.targetPaths.length}`);
+} else {
+  console.log(`Target: ${options.targetPaths[0]}`);
+}
+if (options.targetPaths.length > 1) {
+  options.targetPaths.forEach((target, index) => {
+    console.log(`  ${index + 1}. ${target}`);
+  });
+}
 console.log(`Model: ${options.model}`);
 console.log(`Apply changes: ${options.applyChanges ? "enabled" : "disabled"}`);
 console.log("");
-
-const prompt = buildPrompt(options);
 
 const claudeSettings: Settings = {};
 
@@ -169,25 +231,38 @@ const allowedTools = [
 
 removeAgentFlags();
 
-const defaultFlags: ClaudeFlags = {
-  model: options.model,
-  settings: JSON.stringify(claudeSettings),
-  allowedTools: allowedTools.join(" "),
-  "permission-mode": options.applyChanges ? "acceptEdits" : "default",
-  ...(options.applyChanges ? { 'dangerously-skip-permissions': true } : {}),
-};
+let completed = 0;
 
-try {
-  const exitCode = await claude(prompt, defaultFlags);
-  if (exitCode === 0) {
-    console.log("\n✅ Migration session complete\n");
-    console.log("Next steps:");
-    console.log("1. Review the proposed or applied changes");
-    console.log("2. Run relevant tests or scripts");
-    console.log("3. Commit the migration once verified");
+for (const [index, targetPath] of options.targetPaths.entries()) {
+  const prompt = buildPrompt(targetPath, options.applyChanges);
+  const defaultFlags: ClaudeFlags = {
+    model: options.model,
+    settings: JSON.stringify(claudeSettings),
+    allowedTools: allowedTools.join(" "),
+    "permission-mode": options.applyChanges ? "acceptEdits" : "default",
+    ...(options.applyChanges ? { 'dangerously-skip-permissions': true } : {}),
+  };
+
+  console.log(`🚀 [${index + 1}/${options.targetPaths.length}] Migrating: ${targetPath}`);
+
+  try {
+    const exitCode = await claude(prompt, defaultFlags);
+    if (exitCode !== 0) {
+      console.error(`❌ Claude exited with code ${exitCode} while processing ${targetPath}`);
+      process.exit(exitCode);
+    }
+
+    completed += 1;
+  } catch (error) {
+    console.error(`❌ Fatal error while migrating ${targetPath}:`, error);
+    process.exit(1);
   }
-  process.exit(exitCode);
-} catch (error) {
-  console.error("❌ Fatal error:", error);
-  process.exit(1);
 }
+
+console.log(`\n✅ Migration sessions complete (${completed}/${options.targetPaths.length})\n`);
+console.log("Next steps:");
+console.log("1. Review the proposed or applied changes");
+console.log("2. Run relevant tests or scripts");
+console.log("3. Commit the migration once verified");
+
+process.exit(0);

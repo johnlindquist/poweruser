@@ -1,22 +1,104 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
+
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
+
+type OutputFormat = 'json' | 'csv' | 'markdown';
 
 interface ScraperOptions {
   url: string;
   prompt: string;
-  outputFile?: string;
-  format?: 'json' | 'csv' | 'markdown';
-  maxItems?: number;
+  outputFile: string;
+  format: OutputFormat;
+  maxItems: number;
 }
 
-async function scrapeData(options: ScraperOptions) {
-  const { url, prompt: dataPrompt, outputFile, format = 'json', maxItems = 100 } = options;
-  const output = outputFile || `scraped-data.${format}`;
-  console.log('🕷️  Chrome Data Scraper\n');
-  console.log(`URL: ${url}`);
-  console.log(`Data request: ${dataPrompt}`);
-  console.log(`Output: ${output}`);
-  console.log(`Format: ${format}\n`);
+const DEFAULT_FORMAT: OutputFormat = 'json';
+const DEFAULT_MAX_ITEMS = 100;
+
+function printHelp(): void {
+  console.log(`\n🕷️  Chrome Data Scraper\n\nUsage:\n  bun run agents/chrome-data-scraper.ts <url> "<data description>" [--output <file>] [--format json|csv|markdown] [--max-items <number>]\n\nExamples:\n  bun run agents/chrome-data-scraper.ts https://example.com "extract all product names and prices"\n  bun run agents/chrome-data-scraper.ts https://news.example.com "get headlines and publication dates" --format csv\n  bun run agents/chrome-data-scraper.ts https://shop.example.com "scrape product information with prices and ratings" --output products.json --max-items 50\n  bun run agents/chrome-data-scraper.ts https://blog.example.com "extract article titles and author names" --format markdown\n`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readNumberFlag(name: string): number | undefined {
+  const raw = readStringFlag(name);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.error(`❌ Error: --${name} must be a positive number`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function parseOptions(): ScraperOptions {
+  const url = positionals[0];
+  const dataPrompt = positionals[1];
+
+  if (!url || !dataPrompt) {
+    printHelp();
+    process.exit(1);
+  }
+
+  const outputFile = readStringFlag('output');
+  const formatRaw = readStringFlag('format');
+  const format = formatRaw && ['json', 'csv', 'markdown'].includes(formatRaw)
+    ? (formatRaw as OutputFormat)
+    : DEFAULT_FORMAT;
+
+  const maxItems = readNumberFlag('max-items') ?? DEFAULT_MAX_ITEMS;
+
+  const resolvedOutput = outputFile ?? `scraped-data.${format}`;
+
+  return {
+    url,
+    prompt: dataPrompt,
+    outputFile: resolvedOutput,
+    format,
+    maxItems,
+  };
+}
+
+function buildPrompt(options: ScraperOptions): string {
+  const { url, prompt: dataPrompt, outputFile, format, maxItems } = options;
 
   const systemPrompt = `You are an expert web scraping assistant. Use Chrome DevTools to analyze the page structure and extract the requested data.
 
@@ -41,111 +123,65 @@ Always include:
 - Preview of first few items
 - Any extraction challenges or limitations encountered`;
 
-  const fullPrompt = `${systemPrompt}
+  return `${systemPrompt}
 
 User request: Extract the following data from ${url}: ${dataPrompt}
 
-Please extract the data and save it as ${format} to ${output}. Limit extraction to ${maxItems} items to avoid overwhelming the output.
+Please extract the data and save it as ${format} to ${outputFile}. Limit extraction to ${maxItems} items to avoid overwhelming the output.
 
 Start by navigating to the page and analyzing its structure to determine the best extraction approach.`;
+}
 
-  const result = query({
-    prompt: fullPrompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__evaluate_script',
-        'mcp__chrome-devtools__wait_for',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__take_screenshot',
-        'mcp__chrome-devtools__list_network_requests',
-        'Write',
-        'TodoWrite'
-      ],
-      permissionMode: 'acceptEdits',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    console.log('🌐 Loading target page...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_snapshot') {
-                    console.log('🔍 Analyzing page structure...');
-                  } else if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('🕷️  Extracting data...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('📸 Taking screenshot for reference...');
-                  } else if (toolName === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`💾 Saving to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__take_snapshot') {
-                    console.log('✅ Page structure analyzed');
-                  } else if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Data extracted');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Data saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Data scraping complete!');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 20,
-      model: 'claude-sonnet-4-5-20250929',
+const options = parseOptions();
+
+console.log('🕷️  Chrome Data Scraper\n');
+console.log(`URL: ${options.url}`);
+console.log(`Data request: ${options.prompt}`);
+console.log(`Output: ${options.outputFile}`);
+console.log(`Format: ${options.format}`);
+console.log(`Max items: ${options.maxItems}\n`);
+
+const prompt = buildPrompt(options);
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__evaluate_script',
+  'mcp__chrome-devtools__wait_for',
+  'mcp__chrome-devtools__take_snapshot',
+  'mcp__chrome-devtools__take_screenshot',
+  'mcp__chrome-devtools__list_network_requests',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
+  },
+};
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n✅ Data scraped: ${output}`);
-      if (message.result) console.log('\n' + message.result);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'acceptEdits',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n✅ Data scraped: ${options.outputFile}`);
     }
-  }
-}
-
-const args = process.argv.slice(2);
-if (args.length < 2 || args.includes('--help')) {
-  console.log('\n🕷️  Chrome Data Scraper\n\nUsage:\n  bun run agents/chrome-data-scraper.ts <url> "<data description>" [--output <file>] [--format json|csv|markdown] [--max-items <number>]\n\nExamples:\n  bun run agents/chrome-data-scraper.ts https://example.com "extract all product names and prices"\n  bun run agents/chrome-data-scraper.ts https://news.example.com "get headlines and publication dates" --format csv\n  bun run agents/chrome-data-scraper.ts https://shop.example.com "scrape product information with prices and ratings" --output products.json --max-items 50\n  bun run agents/chrome-data-scraper.ts https://blog.example.com "extract article titles and author names" --format markdown\n');
-  process.exit(0);
-}
-
-const options: ScraperOptions = { url: args[0]!, prompt: args[1]! };
-const outputIndex = args.indexOf('--output');
-if (outputIndex !== -1 && args[outputIndex + 1]) options.outputFile = args[outputIndex + 1];
-const formatIndex = args.indexOf('--format');
-if (formatIndex !== -1 && args[formatIndex + 1]) options.format = args[formatIndex + 1] as any;
-const maxItemsIndex = args.indexOf('--max-items');
-if (maxItemsIndex !== -1 && args[maxItemsIndex + 1]) options.maxItems = parseInt(args[maxItemsIndex + 1]!, 10);
-
-scrapeData(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

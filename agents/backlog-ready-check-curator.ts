@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Backlog Ready-Check Curator Agent
@@ -7,23 +7,48 @@
  * Verifies grooming quality, highlights risks, and drafts improvement guidance.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, getPositionals, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const args = process.argv.slice(2);
-const positional = args.filter((arg) => !arg.startsWith('--'));
-const projectRoot = positional[0] ?? process.cwd();
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
 
-const outputFlagIndex = args.indexOf('--output');
-const outputFile =
-  outputFlagIndex !== -1 && args[outputFlagIndex + 1]
-    ? args[outputFlagIndex + 1]
-    : 'backlog-ready-check-report.md';
+const projectRoot = positionals[0]
+  ? resolve(positionals[0])
+  : process.cwd();
 
-const limitArg = args.find((arg) => arg.startsWith('--limit='));
-const backlogLimit = limitArg ? parseInt(limitArg.split('=')[1] || '25', 10) : 25;
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
 
-const strictMode = args.includes('--strict');
-const dryRun = args.includes('--dry-run');
+  const index = argv.indexOf(`--${name}`);
+  if (index !== -1 && argv[index + 1] && !argv[index + 1]!.startsWith("--")) {
+    return argv[index + 1]!;
+  }
+
+  return undefined;
+}
+
+const outputFile = readStringFlag("output") ?? "backlog-ready-check-report.md";
+
+const limitArg = (() => {
+  const direct = readStringFlag("limit");
+  if (direct) return direct;
+  const equalsForm = argv.find((arg) => arg.startsWith("--limit="));
+  return equalsForm ? equalsForm.split("=")[1] ?? "" : undefined;
+})();
+
+const backlogLimit = (() => {
+  const parsed = limitArg ? Number.parseInt(limitArg, 10) : 25;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
+})();
+
+const strictMode = values.strict === true || argv.includes("--strict");
+const dryRun = values["dry-run"] === true || argv.includes("--dry-run");
 
 const systemPrompt = `You are the Backlog Ready-Check Curator — an agent obsessed with backlog clarity and execution momentum.
 
@@ -66,52 +91,43 @@ Workflow expectations:
 
 Remember: Honor dry-run vs strict mode behavior, keep logging informative, and exit gracefully if nothing actionable is found.`;
 
-async function main() {
-  console.log('🗂️  Backlog Ready-Check Curator');
-  console.log(`📁 Workspace: ${projectRoot}`);
-  console.log(`📝 Report file: ${outputFile}`);
-  console.log(`🔍 Ticket limit: ${backlogLimit}`);
-  console.log(`🚦 Strict mode: ${strictMode ? 'ON' : 'OFF'}`);
-  console.log(`🛡️  Dry run: ${dryRun ? 'YES' : 'NO'}`);
-  console.log();
+console.log('🗂️  Backlog Ready-Check Curator');
+console.log(`📁 Workspace: ${projectRoot}`);
+console.log(`📝 Report file: ${outputFile}`);
+console.log(`🔍 Ticket limit: ${backlogLimit}`);
+console.log(`🚦 Strict mode: ${strictMode ? 'ON' : 'OFF'}`);
+console.log(`🛡️  Dry run: ${dryRun ? 'YES' : 'NO'}`);
+console.log();
 
-  const stream = query({
-    prompt: userPrompt,
-    options: {
-      systemPrompt,
-      cwd: projectRoot,
-      allowedTools: dryRun
-        ? ['Glob', 'Grep', 'Read']
-        : ['Glob', 'Grep', 'Read', 'Write', 'TodoWrite'],
-      permissionMode: strictMode ? 'acceptEdits' : 'default',
-      maxTurns: 18,
-      includePartialMessages: false,
-    },
-  });
+const settings: Settings = {};
+const allowedTools = dryRun
+  ? ['Glob', 'Grep', 'Read']
+  : ['Glob', 'Grep', 'Read', 'Write', 'TodoWrite'];
 
-  for await (const message of stream) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ Backlog review complete!');
-        console.log(`   Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`   Turns: ${message.num_turns}`);
-      } else {
-        console.error('\n❌ Agent ended without success.');
-        console.error(`Subtype: ${message.subtype}`);
-        process.exit(1);
-      }
-    }
-  }
+const previousCwd = process.cwd();
+if (projectRoot !== previousCwd) {
+  process.chdir(projectRoot);
 }
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': strictMode ? 'acceptEdits' : 'default',
+  settings: JSON.stringify(settings),
+  'append-system-prompt': systemPrompt,
+};
+
+try {
+  const exitCode = await claude(userPrompt, defaultFlags);
+  if (exitCode !== 0) {
+    process.exit(exitCode);
+  }
+  console.log('\n✅ Backlog review complete!');
+} catch (error) {
+  console.error('❌ Fatal error:', error);
   process.exit(1);
-});
+} finally {
+  if (projectRoot !== previousCwd) {
+    process.chdir(previousCwd);
+  }
+}

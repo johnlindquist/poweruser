@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Dependency Update Guardian
@@ -17,24 +17,101 @@
  *   --create-pr            Create a PR with the updates (requires gh cli)
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, getPositionals, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-interface UpdateGuardianOptions {
+export interface UpdateGuardianOptions {
   projectPath?: string;
   autoUpdate?: boolean;
   securityOnly?: boolean;
   createPR?: boolean;
 }
 
-async function runDependencyUpdateGuardian(options: UpdateGuardianOptions = {}) {
-  const {
-    projectPath = process.cwd(),
-    autoUpdate = false,
-    securityOnly = false,
-    createPR = false,
-  } = options;
+export interface ResolvedGuardianOptions {
+  projectPath: string;
+  autoUpdate: boolean;
+  securityOnly: boolean;
+  createPR: boolean;
+}
 
-  const prompt = `You are the Dependency Update Guardian. Your mission is to keep dependencies secure and up-to-date without breaking things.
+function printHelp(): void {
+  console.log(`
+🛡️  Dependency Update Guardian
+
+Keeps your dependencies secure and up-to-date without breaking things.
+
+Usage:
+  bun run agents/dependency-update-guardian.ts [options]
+
+Options:
+  --project-path <path>  Path to project directory (default: current directory)
+  --auto-update          Automatically apply safe updates after testing
+  --security-only        Only check for security updates
+  --create-pr            Create a PR with the updates (requires gh cli)
+  --help, -h             Show this help message
+
+Examples:
+  bun run agents/dependency-update-guardian.ts
+  bun run agents/dependency-update-guardian.ts --security-only
+  bun run agents/dependency-update-guardian.ts --auto-update --create-pr
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+function readBooleanFlag(name: string): boolean {
+  return values[name] === true || argv.includes(`--${name}`);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+
+  const index = argv.indexOf(`--${name}`);
+  if (index !== -1 && argv[index + 1] && !argv[index + 1]!.startsWith("--")) {
+    return argv[index + 1]!;
+  }
+
+  const equalsForm = argv.find((arg) => arg.startsWith(`--${name}=`));
+  if (equalsForm) {
+    const [, value] = equalsForm.split("=", 2);
+    if (value && value.length > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function parseCliOptions(): ResolvedGuardianOptions | null {
+  const help = values.help === true || values.h === true;
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const projectPath = resolve(readStringFlag("project-path") ?? positionals[0] ?? process.cwd());
+  const autoUpdate = readBooleanFlag("auto-update");
+  const securityOnly = readBooleanFlag("security-only");
+  const createPR = readBooleanFlag("create-pr");
+
+  return {
+    projectPath,
+    autoUpdate,
+    securityOnly,
+    createPR,
+  };
+}
+
+function buildPrompt(options: ResolvedGuardianOptions): string {
+  const { projectPath, securityOnly, autoUpdate, createPR } = options;
+
+  return `You are the Dependency Update Guardian. Your mission is to keep dependencies secure and up-to-date without breaking things.
 
 Project path: ${projectPath}
 
@@ -67,118 +144,64 @@ Important guidelines:
 - Check for deprecated packages and suggest modern alternatives
 
 Generate a comprehensive dependency update report and ${autoUpdate ? 'apply safe updates' : 'provide actionable recommendations'}.`;
-
-  console.log('🛡️  Dependency Update Guardian starting...\n');
-  console.log(`📂 Project: ${projectPath}`);
-  console.log(`🔒 Security only: ${securityOnly}`);
-  console.log(`🔄 Auto-update: ${autoUpdate}`);
-  console.log(`📝 Create PR: ${createPR}\n`);
-
-  const result = query({
-    prompt,
-    options: {
-      cwd: projectPath,
-      allowedTools: [
-        'Bash',
-        'BashOutput',
-        'Read',
-        'Write',
-        'Edit',
-        'Glob',
-        'Grep',
-        'WebFetch',
-        'WebSearch',
-      ],
-      permissionMode: 'acceptEdits',
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
-
-  let finalResult = '';
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      // Print assistant messages as they come
-      for (const content of message.message.content) {
-        if (content.type === 'text') {
-          console.log(content.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        finalResult = message.result;
-        console.log('\n✅ Dependency analysis complete!');
-        console.log(`\n💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-      } else {
-        console.error('\n❌ Error during execution:', message);
-        process.exit(1);
-      }
-    }
-  }
-
-  return finalResult;
 }
 
-// CLI execution
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-  const options: UpdateGuardianOptions = {};
+export async function runDependencyUpdateGuardian(options: ResolvedGuardianOptions): Promise<number> {
+  console.log('🛡️  Dependency Update Guardian starting...\n');
+  console.log(`📂 Project: ${options.projectPath}`);
+  console.log(`🔒 Security only: ${options.securityOnly}`);
+  console.log(`🔄 Auto-update: ${options.autoUpdate}`);
+  console.log(`📝 Create PR: ${options.createPR}\n`);
 
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case '--project-path':
-        options.projectPath = args[++i];
-        break;
-      case '--auto-update':
-        options.autoUpdate = true;
-        break;
-      case '--security-only':
-        options.securityOnly = true;
-        break;
-      case '--create-pr':
-        options.createPR = true;
-        break;
-      case '--help':
-        console.log(`
-Dependency Update Guardian
+  const prompt = buildPrompt(options);
+  const claudeSettings: Settings = {};
 
-Keeps your dependencies secure and up-to-date without breaking things.
+  const allowedTools = [
+    'Bash',
+    'BashOutput',
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'WebFetch',
+    'WebSearch',
+  ];
 
-Usage:
-  bun run agents/dependency-update-guardian.ts [options]
+  const defaultFlags: ClaudeFlags = {
+    model: 'claude-sonnet-4-5-20250929',
+    settings: JSON.stringify(claudeSettings),
+    allowedTools: allowedTools.join(' '),
+    'permission-mode': options.autoUpdate ? 'acceptEdits' : 'default',
+  };
 
-Options:
-  --project-path <path>  Path to project directory (default: current directory)
-  --auto-update          Automatically apply safe updates after testing
-  --security-only        Only check for security updates
-  --create-pr            Create a PR with the updates (requires gh cli)
-  --help                 Show this help message
-
-Examples:
-  # Analyze current project
-  bun run agents/dependency-update-guardian.ts
-
-  # Check for security updates only
-  bun run agents/dependency-update-guardian.ts --security-only
-
-  # Auto-apply safe updates and create PR
-  bun run agents/dependency-update-guardian.ts --auto-update --create-pr
-
-  # Analyze a different project
-  bun run agents/dependency-update-guardian.ts --project-path ../my-project
-        `);
-        process.exit(0);
-    }
+  const previousCwd = process.cwd();
+  if (options.projectPath !== previousCwd) {
+    process.chdir(options.projectPath);
   }
 
   try {
-    await runDependencyUpdateGuardian(options);
+    const exitCode = await claude(prompt, defaultFlags);
+    if (exitCode === 0) {
+      console.log('\n✅ Dependency analysis complete!');
+    }
+    return exitCode;
   } catch (error) {
     console.error('❌ Fatal error:', error);
-    process.exit(1);
+    return 1;
+  } finally {
+    if (options.projectPath !== previousCwd) {
+      process.chdir(previousCwd);
+    }
   }
 }
 
-export { runDependencyUpdateGuardian };
+const cliOptions = parseCliOptions();
+if (cliOptions) {
+  runDependencyUpdateGuardian(cliOptions)
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error('❌ Fatal error:', error);
+      process.exit(1);
+    });
+}

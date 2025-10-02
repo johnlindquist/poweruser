@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Chrome Console Error Hunter Agent
@@ -20,33 +20,132 @@
  *   bun run agents/chrome-console-error-hunter.ts https://example.com --report errors.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
 interface ErrorHunterOptions {
   url: string;
-  crawlDepth?: number;
-  reportFile?: string;
-  includeWarnings?: boolean;
-  checkNetworkErrors?: boolean;
+  crawlDepth: number;
+  reportFile: string;
+  includeWarnings: boolean;
+  checkNetworkErrors: boolean;
 }
 
-async function huntConsoleErrors(options: ErrorHunterOptions) {
-  const {
-    url,
-    crawlDepth = 1,
-    reportFile = 'console-errors-report.md',
-    includeWarnings = true,
-    checkNetworkErrors = true,
-  } = options;
+const DEFAULT_REPORT_FILE = 'console-errors-report.md';
 
-  console.log('🐛 Chrome Console Error Hunter\n');
-  console.log(`URL: ${url}`);
-  console.log(`Crawl Depth: ${crawlDepth}`);
-  console.log(`Include Warnings: ${includeWarnings}`);
-  console.log(`Check Network Errors: ${checkNetworkErrors}`);
-  console.log('');
+function printHelp(): void {
+  console.log(`
+🐛 Chrome Console Error Hunter
 
-  const prompt = `
+Usage:
+  bun run agents/chrome-console-error-hunter.ts <url> [options]
+
+Arguments:
+  url                     Website URL to check
+
+Options:
+  --crawl-depth <number>  Pages to crawl (default: 1)
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --no-warnings           Skip warnings, only report errors
+  --no-network            Skip network error checking
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+if (positionals.length === 0) {
+  console.error('❌ Error: URL is required');
+  printHelp();
+  process.exit(1);
+}
+
+const urlCandidate = positionals[0]!;
+
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readNumberFlag(name: string, defaultValue: number): number {
+  const raw = readStringFlag(name);
+  if (!raw) {
+    return defaultValue;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    console.error(`❌ Error: --${name} must be a positive integer`);
+    process.exit(1);
+  }
+
+  return Math.floor(parsed);
+}
+
+function readBooleanFlag(name: string, defaultValue: boolean): boolean {
+  if (values[name] === true) return true;
+  if (values[name] === false) return false;
+  return argv.includes(`--${name}`) ? true : defaultValue;
+}
+
+const includeWarnings = !readBooleanFlag('no-warnings', false);
+const checkNetworkErrors = !readBooleanFlag('no-network', false);
+
+const options: ErrorHunterOptions = {
+  url: urlCandidate,
+  crawlDepth: readNumberFlag('crawl-depth', 1),
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+  includeWarnings,
+  checkNetworkErrors,
+};
+
+console.log('🐛 Chrome Console Error Hunter\n');
+console.log(`URL: ${options.url}`);
+console.log(`Crawl Depth: ${options.crawlDepth}`);
+console.log(`Include Warnings: ${options.includeWarnings}`);
+console.log(`Check Network Errors: ${options.checkNetworkErrors}`);
+console.log('');
+
+function buildPrompt(opts: ErrorHunterOptions): string {
+  const { url, crawlDepth, reportFile, includeWarnings, checkNetworkErrors } = opts;
+
+  return `
 You are a JavaScript debugging expert using Chrome DevTools MCP to find console errors.
 
 Target URL: ${url}
@@ -221,119 +320,52 @@ To reproduce these errors locally:
 - Monitor error rates and trends
 - Add source maps for better debugging
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__list_console_messages',
-        'mcp__chrome-devtools__list_network_requests',
-        'mcp__chrome-devtools__evaluate_script',
-        'mcp__chrome-devtools__wait_for',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 40,
-      model: 'claude-sonnet-4-5-20250929',
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__list_console_messages',
+  'mcp__chrome-devtools__list_network_requests',
+  'mcp__chrome-devtools__evaluate_script',
+  'mcp__chrome-devtools__wait_for',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        if (!text.includes('tool_use') && text.trim().length > 0) {
-          console.log('\n💡', text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Error Hunt Complete');
-        console.log('='.repeat(60));
-        console.log(`\nDuration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`\n📄 Report: ${reportFile}`);
-
-        if (message.result) {
-          console.log('\n' + message.result);
-        }
-      }
-    }
-  }
-}
-
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🐛 Chrome Console Error Hunter
-
-Usage:
-  bun run agents/chrome-console-error-hunter.ts <url> [options]
-
-Arguments:
-  url                     Website URL to check
-
-Options:
-  --crawl-depth <number>  Pages to crawl (default: 1)
-  --report <file>         Output file (default: console-errors-report.md)
-  --no-warnings           Skip warnings, only report errors
-  --no-network            Skip network error checking
-  --help                  Show this help
-
-Examples:
-  bun run agents/chrome-console-error-hunter.ts https://example.com
-  bun run agents/chrome-console-error-hunter.ts https://example.com --crawl-depth 3
-  bun run agents/chrome-console-error-hunter.ts https://example.com --no-warnings
-  bun run agents/chrome-console-error-hunter.ts https://example.com --report my-errors.md
-  `);
-  process.exit(0);
-}
-
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL is required');
-  process.exit(1);
-}
-
-try {
-  new URL(url);
-} catch (error) {
-  console.error('❌ Error: Invalid URL');
-  process.exit(1);
-}
-
-const options: ErrorHunterOptions = {
-  url,
-  includeWarnings: !args.includes('--no-warnings'),
-  checkNetworkErrors: !args.includes('--no-network'),
+  },
 };
 
-for (let i = 1; i < args.length; i++) {
-  switch (args[i]) {
-    case '--crawl-depth':
-      options.crawlDepth = parseInt(args[++i] || '1', 10);
-      break;
-    case '--report':
-      options.reportFile = args[++i];
-      break;
-  }
-}
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
 
-huntConsoleErrors(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log('\n' + '='.repeat(60));
+      console.log('📊 Error Hunt Complete');
+      console.log('='.repeat(60));
+      console.log(`\n📄 Report: ${options.reportFile}`);
+    }
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

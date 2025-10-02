@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * CI Failure Explainer Agent
@@ -15,8 +15,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
 type Provider = 'github' | 'gitlab' | 'circleci' | 'azure' | 'buildkite' | 'jenkins' | 'other';
 
@@ -34,57 +34,116 @@ function printHelp(): void {
   console.log(`\n🚨 CI Failure Explainer\n\nUsage:\n  bun run agents/ci-failure-explainer.ts --log <path> [--log <path> ...] [options]\n\nOptions:\n  --log <path>             Path to a CI log or artifact (repeatable)\n  --provider <name>        CI provider (github|gitlab|circleci|azure|buildkite|jenkins|other)\n  --branch <name>          Failing branch or tag\n  --compare <ref>          Reference branch to diff against (e.g. main)\n  --flake-window <mins>    Minutes of history to inspect for flaky tests (default: 720)\n  --timeline               Ask the agent to reconstruct a job timeline\n  --fetch-artifacts        Allow the agent to recreate curl commands for artifact downloads\n  --help                   Show this message\n\nExamples:\n  bun run agents/ci-failure-explainer.ts --log artifacts/ci/github-actions.log\n  bun run agents/ci-failure-explainer.ts --log logs/job.log --log logs/tests.log --branch release/1.3 --compare main\n  `);
 }
 
-function parseArgsFromArgv(argv: string[]): CiFailureExplainerOptions {
-  if (argv.length === 0) {
-    printHelp();
-    throw new Error('No arguments supplied');
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const helpFlag = values.help === true || argv.includes('--help');
+if (helpFlag && argv.length === 0) {
+  printHelp();
+  process.exit(0);
+}
+
+if (helpFlag) {
+  printHelp();
+  process.exit(0);
+}
+
+function collectRepeatedArgs(name: string): string[] {
+  const collected: string[] = [];
+
+  // --name=value form
+  for (const rawArg of argv) {
+    const arg = rawArg ?? '';
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value) {
+        collected.push(value);
+      }
+    }
   }
 
-  const { values, positionals } = parseArgs({
-    args: argv,
-    options: {
-      help: { type: 'boolean', default: false },
-      log: { type: 'string', multiple: true },
-      provider: { type: 'string' },
-      branch: { type: 'string' },
-      compare: { type: 'string' },
-      'flake-window': { type: 'string', default: '720' },
-      timeline: { type: 'boolean', default: false },
-      'fetch-artifacts': { type: 'boolean', default: false },
-    },
-    allowPositionals: true,
-  });
-
-  if (values.help) {
-    printHelp();
-    process.exit(0);
+  // --name value form
+  for (let i = 0; i < argv.length; i += 1) {
+    const current = argv[i];
+    if (current === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        collected.push(next);
+      }
+    }
   }
 
-  const flakyWindowMinutes = Number(values['flake-window'] as string);
-  if (!Number.isFinite(flakyWindowMinutes) || flakyWindowMinutes <= 0) {
-    throw new Error('flake-window must be a positive number of minutes');
+  const rawValue = values[name];
+  if (typeof rawValue === 'string') {
+    collected.push(rawValue);
+  } else if (Array.isArray(rawValue)) {
+    for (const item of rawValue) {
+      if (typeof item === 'string') {
+        collected.push(item);
+      }
+    }
   }
 
-  const logPaths = [
-    ...((values.log as string[] | undefined) ?? []),
-    ...positionals,
-  ];
+  return collected;
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanFlag(name: string): boolean {
+  return values[name] === true || argv.includes(`--${name}`);
+}
+
+function parseCliOptions(): CiFailureExplainerOptions {
+  const logPaths = [...collectRepeatedArgs('log'), ...positionals];
 
   if (logPaths.length === 0) {
-    throw new Error('Provide at least one --log path');
+    console.error('❌ Error: Provide at least one --log path');
+    printHelp();
+    process.exit(1);
   }
 
-  const options: CiFailureExplainerOptions = {
-    logPaths,
-    provider: values.provider as Provider | undefined,
-    focusBranch: values.branch as string | undefined,
-    compareBranch: values.compare as string | undefined,
-    flakyWindowMinutes,
-    includeTimeline: values.timeline as boolean,
-    fetchArtifacts: values['fetch-artifacts'] as boolean,
-  };
+  const rawFlakeWindow = readStringFlag('flake-window');
+  const flakyWindowMinutes = rawFlakeWindow ? Number(rawFlakeWindow) : 720;
+  if (!Number.isFinite(flakyWindowMinutes) || flakyWindowMinutes <= 0) {
+    console.error('❌ Error: --flake-window must be a positive number of minutes');
+    process.exit(1);
+  }
 
-  return options;
+  return {
+    logPaths,
+    provider: typeof values.provider === 'string' ? (values.provider as Provider) : undefined,
+    focusBranch: readStringFlag('branch'),
+    compareBranch: readStringFlag('compare'),
+    flakyWindowMinutes,
+    includeTimeline: readBooleanFlag('timeline'),
+    fetchArtifacts: readBooleanFlag('fetch-artifacts'),
+  };
 }
 
 function resolvePaths(paths: string[]): string[] {
@@ -172,111 +231,43 @@ async function runCiFailureExplainer(rawOptions: CiFailureExplainerOptions) {
   const prompt = buildPrompt(rawOptions, resolvedLogs);
   const additionalDirectories = uniqueDirectories(resolvedLogs);
 
-  const stream = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      additionalDirectories,
-      allowedTools: ['Read', 'Grep', 'Bash', 'Write', 'TodoWrite', 'Task'],
-      maxTurns: 45,
-      permissionMode: 'acceptEdits',
-      agents: {
-        'log-clusterer': {
-          description: 'Clusters CI log lines into failure buckets and finds repeating patterns',
-          tools: ['Read', 'Grep'],
-          prompt: 'You are a log clustering assistant focused on grouping stack traces and test failures.',
-          model: 'haiku',
-        },
-        'root-cause-analyst': {
-          description: 'Maps failures to commits, modules, and owners to propose root causes',
-          tools: ['Read', 'Grep', 'Bash'],
-          prompt: 'You analyze diffs and blame data to identify the most likely root cause for CI failures.',
-          model: 'sonnet',
-        },
-        'playbook-author': {
-          description: 'Produces concise remediation plans and status communications',
-          tools: ['Write', 'TodoWrite'],
-          prompt: 'You write crisp remediation plans and ready-to-send status updates for CI incidents.',
-          model: 'haiku',
-        },
-      },
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input: any) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Read') {
-                    console.log(`📖 Reading: ${(input.tool_input as { file_path?: string }).file_path ?? 'unknown file'}`);
-                  }
-                  if (input.tool_name === 'Grep') {
-                    console.log('🔎 Searching logs...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input: any) => {
-                if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'Write') {
-                  console.log('📝 Drafted summary content.');
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+  const claudeSettings: Settings = additionalDirectories.length > 0
+    ? { permissions: { additionalDirectories } }
+    : {};
 
-  for await (const message of stream) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find(
-        (chunk: { type: string }) => chunk.type === 'text'
-      ) as { type: 'text'; text: string } | undefined;
-      if (textContent) {
-        console.log(`\n🤖 ${textContent.text}`);
-      }
-    } else if (message.type === 'system' && message.subtype === 'init') {
-      console.log('🤖 Agent connected. Beginning analysis...');
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('✅ CI Failure Explainer Report');
-        console.log('='.repeat(60));
-        console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`API time: ${(message.duration_api_ms / 1000).toFixed(2)}s`);
-        console.log(`Turns: ${message.num_turns}`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(
-          `Tokens used: ${message.usage.input_tokens} prompt / ${message.usage.output_tokens} completion`
-        );
-        if (message.permission_denials.length > 0) {
-          console.log('Permissions denied:', message.permission_denials.length);
-        }
-      } else {
-        console.error(`\n❌ Analysis ended due to ${message.subtype}`);
-      }
+  const allowedTools = [
+    'Read',
+    'Grep',
+    'Bash',
+    'Write',
+    'TodoWrite',
+    'Task',
+  ];
+
+  const defaultFlags: ClaudeFlags = {
+    model: 'claude-sonnet-4-5-20250929',
+    settings: JSON.stringify(claudeSettings),
+    allowedTools: allowedTools.join(' '),
+    'permission-mode': 'acceptEdits',
+  };
+
+  try {
+    const exitCode = await claude(prompt, defaultFlags);
+    if (exitCode === 0) {
+      console.log('\n✅ CI failure analysis complete!');
     }
+    return exitCode;
+  } catch (error) {
+    console.error('❌ Error during CI failure analysis:', error);
+    return 1;
   }
 }
 
-(async () => {
-  try {
-    const options = parseArgsFromArgv(process.argv.slice(2));
-    await runCiFailureExplainer(options);
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(`❌ ${error.message}`);
-    } else {
-      console.error('❌ Unexpected error', error);
-    }
+const cliOptions = parseCliOptions();
+
+runCiFailureExplainer(cliOptions)
+  .then((code) => process.exit(code))
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
     process.exit(1);
-  }
-})();
+  });

@@ -1,43 +1,149 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface VitalsTrackerOptions { url: string; runs?: number; reportFile?: string; }
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
-async function trackWebVitals(options: VitalsTrackerOptions) {
-  const { url, runs = 5, reportFile = 'web-vitals-tracking-report.md' } = options;
-  console.log('📈 Chrome Web Vitals Tracker\n');
-  console.log(`URL: ${url}`);
-  console.log(`Test Runs: ${runs}\n`);
-
-  const prompt = `Track Core Web Vitals for ${url} over ${runs} test runs. For each run: open fresh page, run performance trace, measure LCP, CLS, INP/FID, TTFB. Collect all measurements. Calculate statistics: mean, median, p75, p95, min, max for each metric. Identify variability and outliers. Generate "${reportFile}" with: statistical analysis, trends, pass/fail for each metric, consistency assessment, recommendations to improve reliability and reduce variance.`;
-
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__performance_start_trace', 'mcp__chrome-devtools__performance_stop_trace', 'mcp__chrome-devtools__performance_analyze_insight', 'mcp__chrome-devtools__close_page', 'Write', 'TodoWrite'],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 40,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
-
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') console.log(`\n📄 Report: ${reportFile}`);
-  }
+interface VitalsTrackerOptions {
+  url: string;
+  runs: number;
+  reportFile: string;
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n📈 Chrome Web Vitals Tracker\n\nUsage:\n  bun run agents/chrome-web-vitals-tracker.ts <url> [--runs <number>] [--report <file>]\n');
+const DEFAULT_RUNS = 5;
+const DEFAULT_REPORT_FILE = 'web-vitals-tracking-report.md';
+
+function printHelp(): void {
+  console.log(`
+📈 Chrome Web Vitals Tracker
+
+Usage:
+  bun run agents/chrome-web-vitals-tracker.ts <url> [--runs <number>] [--report <file>]
+
+Options:
+  --runs <number>    Number of test runs (default: ${DEFAULT_RUNS})
+  --report <file>    Report filename (default: ${DEFAULT_REPORT_FILE})
+  --help, -h         Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
   process.exit(0);
 }
 
-const options: VitalsTrackerOptions = { url: args[0]! };
-const runsIndex = args.indexOf('--runs');
-if (runsIndex !== -1 && args[runsIndex + 1]) options.runs = parseInt(args[runsIndex + 1]!);
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1 && args[reportIndex + 1]) options.reportFile = args[reportIndex + 1];
+if (positionals.length === 0) {
+  console.error('❌ Error: URL required');
+  printHelp();
+  process.exit(1);
+}
 
-trackWebVitals(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });
+const urlCandidate = positionals[0]!;
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL format');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readRuns(): number {
+  const raw = readStringFlag('runs');
+  if (!raw) return DEFAULT_RUNS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.error('❌ Error: --runs must be a positive integer');
+    process.exit(1);
+  }
+  return parsed;
+}
+
+const options: VitalsTrackerOptions = {
+  url: urlCandidate,
+  runs: readRuns(),
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+};
+
+console.log('📈 Chrome Web Vitals Tracker\n');
+console.log(`URL: ${options.url}`);
+console.log(`Test Runs: ${options.runs}\n`);
+
+function buildPrompt(opts: VitalsTrackerOptions): string {
+  const { url, runs, reportFile } = opts;
+
+  return `Track Core Web Vitals for ${url} over ${runs} test runs. For each run: open fresh page, run performance trace, measure LCP, CLS, INP/FID, TTFB. Collect all measurements. Calculate statistics: mean, median, p75, p95, min, max for each metric. Identify variability and outliers. Generate "${reportFile}" with: statistical analysis, trends, pass/fail for each metric, consistency assessment, recommendations to improve reliability and reduce variance.`;
+}
+
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__performance_start_trace',
+  'mcp__chrome-devtools__performance_stop_trace',
+  'mcp__chrome-devtools__performance_analyze_insight',
+  'mcp__chrome-devtools__close_page',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
+    },
+  },
+};
+
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n📄 Report: ${options.reportFile}`);
+    }
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

@@ -1,0 +1,20 @@
+{
+  "name": "claude-proxy-manager",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Integrated proxy manager for inspecting Claude Code HTTPS traffic",
+  "scripts": {
+    "start": "bun run index.ts",
+    "start:no-web": "bun run index.ts --no-web",
+    "dev": "bun --watch run index.ts",
+    "help": "bun run index.ts --help"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

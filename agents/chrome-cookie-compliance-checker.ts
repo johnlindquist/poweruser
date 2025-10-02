@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Chrome Cookie Compliance Checker Agent
@@ -15,20 +15,80 @@
  *   bun run agents/chrome-cookie-compliance-checker.ts <url> [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
+
+const DEFAULT_REPORT_FILE = 'cookie-compliance-report.md';
 
 interface CookieComplianceOptions {
   url: string;
-  reportFile?: string;
+  reportFile: string;
 }
 
-async function checkCookieCompliance(options: CookieComplianceOptions) {
-  const { url, reportFile = 'cookie-compliance-report.md' } = options;
+function printHelp(): void {
+  console.log(`
+🍪 Chrome Cookie Compliance Checker
 
-  console.log('🍪 Chrome Cookie Compliance Checker\n');
-  console.log(`URL: ${url}\n`);
+Usage:
+  bun run agents/chrome-cookie-compliance-checker.ts <url> [options]
 
-  const prompt = `
+Options:
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+if (positionals.length === 0) {
+  console.error('❌ Error: URL required');
+  printHelp();
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+const options: CookieComplianceOptions = {
+  url: positionals[0]!,
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+};
+
+function buildPrompt(opts: CookieComplianceOptions): string {
+  const { url, reportFile } = opts;
+
+  return `
 You are a privacy compliance expert using Chrome DevTools MCP to audit cookie usage.
 
 Target URL: ${url}
@@ -107,66 +167,51 @@ Generate report "${reportFile}":
 // Set others only after explicit consent
 \`\`\`
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__evaluate_script',
-        'mcp__chrome-devtools__list_network_requests',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 20,
-      model: 'claude-sonnet-4-5-20250929',
+console.log('🍪 Chrome Cookie Compliance Checker\n');
+console.log(`URL: ${options.url}\n`);
+
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__take_snapshot',
+  'mcp__chrome-devtools__evaluate_script',
+  'mcp__chrome-devtools__list_network_requests',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
+  },
+};
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n📄 Report: ${reportFile}`);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n📄 Report: ${options.reportFile}`);
     }
-  }
-}
-
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🍪 Chrome Cookie Compliance Checker
-
-Usage:
-  bun run agents/chrome-cookie-compliance-checker.ts <url> [options]
-
-Options:
-  --report <file>         Output file (default: cookie-compliance-report.md)
-  --help                  Show this help
-  `);
-  process.exit(0);
-}
-
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL required');
-  process.exit(1);
-}
-
-const options: CookieComplianceOptions = { url };
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1) options.reportFile = args[reportIndex + 1];
-
-checkCookieCompliance(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

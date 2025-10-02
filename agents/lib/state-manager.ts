@@ -40,11 +40,8 @@ export interface BaseState {
  */
 export class StateManager<T extends BaseState = BaseState> {
     private stateFilePath: string
-    private stateName: string
     
     constructor(options: StateManagerOptions) {
-        this.stateName = options.stateName
-        
         // Build the state file path
         const baseDir = join(process.cwd(), "agents", "tmp")
         const fullDir = options.subDir ? join(baseDir, options.subDir) : baseDir

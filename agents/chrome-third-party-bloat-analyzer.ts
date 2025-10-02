@@ -1,33 +1,95 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Chrome Third-Party Bloat Analyzer Agent
- *
- * Uses Chrome DevTools MCP to identify bloated third-party scripts:
- * - Measures size and load time of third-party resources
- * - Identifies tracking pixels, analytics, ads
- * - Calculates performance impact
- * - Suggests alternatives or removal
- * - Analyzes render-blocking scripts
- *
- * Usage:
- *   bun run agents/chrome-third-party-bloat-analyzer.ts <url> [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
 interface ThirdPartyAnalyzerOptions {
   url: string;
-  reportFile?: string;
+  reportFile: string;
 }
 
-async function analyzeThirdPartyBloat(options: ThirdPartyAnalyzerOptions) {
-  const { url, reportFile = 'third-party-bloat-report.md' } = options;
+const DEFAULT_REPORT_FILE = 'third-party-bloat-report.md';
 
-  console.log('🎯 Chrome Third-Party Bloat Analyzer\n');
-  console.log(`URL: ${url}\n`);
+function printHelp(): void {
+  console.log(`
+🎯 Chrome Third-Party Bloat Analyzer
 
-  const prompt = `
+Usage:
+  bun run agents/chrome-third-party-bloat-analyzer.ts <url> [options]
+
+Options:
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+if (positionals.length === 0) {
+  console.error('❌ Error: URL required');
+  printHelp();
+  process.exit(1);
+}
+
+const urlCandidate = positionals[0]!;
+
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+const options: ThirdPartyAnalyzerOptions = {
+  url: urlCandidate,
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+};
+
+console.log('🎯 Chrome Third-Party Bloat Analyzer\n');
+console.log(`URL: ${options.url}\n`);
+
+function buildPrompt(opts: ThirdPartyAnalyzerOptions): string {
+  const { url, reportFile } = opts;
+
+  return `
 You are a performance optimization expert analyzing third-party script bloat.
 
 Target URL: ${url}
@@ -108,66 +170,48 @@ script.defer = true;
 document.body.appendChild(script);
 \`\`\`
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__performance_start_trace',
-        'mcp__chrome-devtools__performance_stop_trace',
-        'mcp__chrome-devtools__list_network_requests',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 25,
-      model: 'claude-sonnet-4-5-20250929',
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__performance_start_trace',
+  'mcp__chrome-devtools__performance_stop_trace',
+  'mcp__chrome-devtools__list_network_requests',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
     },
-  });
+  },
+};
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n📄 Report: ${reportFile}`);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n📄 Report: ${options.reportFile}`);
     }
-  }
-}
-
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🎯 Chrome Third-Party Bloat Analyzer
-
-Usage:
-  bun run agents/chrome-third-party-bloat-analyzer.ts <url> [options]
-
-Options:
-  --report <file>         Output file (default: third-party-bloat-report.md)
-  --help                  Show this help
-  `);
-  process.exit(0);
-}
-
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL required');
-  process.exit(1);
-}
-
-const options: ThirdPartyAnalyzerOptions = { url };
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1) options.reportFile = args[reportIndex + 1];
-
-analyzeThirdPartyBloat(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

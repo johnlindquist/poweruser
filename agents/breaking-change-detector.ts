@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Breaking Change Detector
@@ -9,9 +9,22 @@
  * Usage: bun agents/breaking-change-detector.ts [base-branch]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, getPositionals, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const baseBranch = process.argv[2] || 'main';
+function printHelp(): void {
+  console.log(`\n🔍 Breaking Change Detector\n\nUsage:\n  bun run agents/breaking-change-detector.ts [base-branch]\n\nArguments:\n  base-branch   Git ref to compare against (default: main)\n\nOptions:\n  --help, -h    Show this help message\n`);
+}
+
+const values = parsedArgs.values as Record<string, unknown>;
+const help = values.help === true || values.h === true;
+
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+const baseBranch = getPositionals()[0] ?? 'main';
 
 const prompt = `You are a Breaking Change Detector agent that analyzes code changes to identify potential breaking changes for library/API consumers.
 
@@ -121,49 +134,32 @@ Generate a markdown report with:
 
 Start by getting the git diff, then analyze the changes systematically.`;
 
-async function main() {
-  console.log('🔍 Breaking Change Detector Starting...\n');
-  console.log(`📊 Comparing current branch with: ${baseBranch}\n`);
+console.log('🔍 Breaking Change Detector Starting...\n');
+console.log(`📊 Comparing current branch with: ${baseBranch}\n`);
 
-  const options = {
-    cwd: process.cwd(),
-    permissionMode: 'bypassPermissions' as const,
-    allowedTools: [
-      'Bash',
-      'Read',
-      'Grep',
-      'Glob',
-      'Write',
-    ],
-    systemPrompt: {
-      type: 'preset' as const,
-      preset: 'claude_code' as const,
-    },
-  };
+const settings: Settings = {};
+const allowedTools = [
+  'Bash',
+  'Read',
+  'Grep',
+  'Glob',
+  'Write',
+];
 
-  try {
-    for await (const message of query({ prompt, options })) {
-      if (message.type === 'assistant') {
-        for (const content of message.message.content) {
-          if (content.type === 'text') {
-            console.log(content.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Analysis Complete!');
-          console.log(`\n📈 Token Usage: ${message.usage.input_tokens} input, ${message.usage.output_tokens} output`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        } else {
-          console.error('\n❌ Analysis failed:', message.subtype);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('❌ Error running Breaking Change Detector:', error);
-    process.exit(1);
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+  settings: JSON.stringify(settings),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode !== 0) {
+    process.exit(exitCode);
   }
+  console.log('\n✅ Analysis Complete!');
+} catch (error) {
+  console.error('❌ Error running Breaking Change Detector:', error);
+  process.exit(1);
 }
-
-main();

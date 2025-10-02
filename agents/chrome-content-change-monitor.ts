@@ -1,102 +1,162 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface MonitorOptions { url: string; interval?: number; selector?: string; reportFile?: string; }
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
-async function monitorContent(options: MonitorOptions) {
-  const { url, interval = 60, selector, reportFile = 'content-changes.md' } = options;
-  console.log('👁️  Chrome Content Change Monitor\n');
-  console.log(`URL: ${url}`);
-  console.log(`Check interval: ${interval}s`);
-  if (selector) console.log(`Watching: ${selector}`);
-  console.log(`Report: ${reportFile}\n`);
-
-  const prompt = `Monitor ${url} for content changes. ${selector ? `Focus on element matching selector "${selector}".` : 'Monitor entire page content.'} Take initial snapshot/screenshot as baseline. Wait ${interval} seconds, refresh page, take new snapshot/screenshot. Use evaluate_script to extract ${selector ? 'targeted element' : 'page'} content and compare with baseline. Detect: text changes, element additions/removals, attribute changes, style changes. Generate ${reportFile} with: timestamp of changes, what changed (before/after), visual diff screenshots, change summary. If no changes detected, report "No changes detected".`;
-
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__take_snapshot', 'mcp__chrome-devtools__take_screenshot', 'mcp__chrome-devtools__evaluate_script', 'mcp__chrome-devtools__wait_for', 'mcp__chrome-devtools__navigate_page_history', 'Write', 'TodoWrite'],
-      permissionMode: 'acceptEdits',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    console.log('🌐 Loading page for monitoring...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_snapshot') {
-                    console.log('📸 Taking baseline snapshot...');
-                  } else if (toolName === 'mcp__chrome-devtools__wait_for') {
-                    console.log(`⏱️  Waiting ${interval}s for changes...`);
-                  } else if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('🔍 Analyzing content changes...');
-                  } else if (toolName === 'Write') {
-                    console.log('📝 Writing change report...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Change detection complete');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Content monitoring complete!');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 30,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
-
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n📄 Report: ${reportFile}`);
-      if (message.result) console.log('\n' + message.result);
-    }
-  }
+interface MonitorOptions {
+  url: string;
+  intervalSeconds: number;
+  selector?: string;
+  reportFile: string;
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n👁️  Chrome Content Change Monitor\n\nUsage:\n  bun run agents/chrome-content-change-monitor.ts <url> [--interval <seconds>] [--selector <css>] [--report <file>]\n\nOptions:\n  --interval <seconds>    Check interval (default: 60)\n  --selector <css>        CSS selector to monitor\n  --report <file>         Report file (default: content-changes.md)\n');
+const DEFAULT_INTERVAL = 60;
+const DEFAULT_REPORT_FILE = 'content-changes.md';
+
+function printHelp(): void {
+  console.log(`
+👁️  Chrome Content Change Monitor
+
+Usage:
+  bun run agents/chrome-content-change-monitor.ts <url> [--interval <seconds>] [--selector <css>] [--report <file>]
+
+Options:
+  --interval <seconds>    Check interval (default: ${DEFAULT_INTERVAL})
+  --selector <css>        CSS selector to monitor
+  --report <file>         Report file (default: ${DEFAULT_REPORT_FILE})
+  --help, -h              Show this help message
+`);
+}
+
+const argv = process.argv.slice(2);
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
   process.exit(0);
 }
 
-const options: MonitorOptions = { url: args[0]! };
-const intervalIndex = args.indexOf('--interval');
-if (intervalIndex !== -1 && args[intervalIndex + 1]) options.interval = parseInt(args[intervalIndex + 1]!);
-const selectorIndex = args.indexOf('--selector');
-if (selectorIndex !== -1 && args[selectorIndex + 1]) options.selector = args[selectorIndex + 1];
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1 && args[reportIndex + 1]) options.reportFile = args[reportIndex + 1];
+if (positionals.length === 0) {
+  console.error('❌ Error: URL required');
+  printHelp();
+  process.exit(1);
+}
 
-monitorContent(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });
+const urlCandidate = positionals[0]!;
+
+try {
+  new URL(urlCandidate);
+} catch {
+  console.error('❌ Error: Invalid URL');
+  process.exit(1);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readNumberFlag(name: string, defaultValue: number): number {
+  const raw = readStringFlag(name);
+  if (!raw) {
+    return defaultValue;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.error(`❌ Error: --${name} must be a positive number`);
+    process.exit(1);
+  }
+
+  return parsed;
+}
+
+const options: MonitorOptions = {
+  url: urlCandidate,
+  intervalSeconds: readNumberFlag('interval', DEFAULT_INTERVAL),
+  selector: readStringFlag('selector'),
+  reportFile: readStringFlag('report') ?? DEFAULT_REPORT_FILE,
+};
+
+console.log('👁️  Chrome Content Change Monitor\n');
+console.log(`URL: ${options.url}`);
+console.log(`Check interval: ${options.intervalSeconds}s`);
+if (options.selector) {
+  console.log(`Watching: ${options.selector}`);
+}
+console.log(`Report: ${options.reportFile}\n`);
+
+function buildPrompt(opts: MonitorOptions): string {
+  const { url, intervalSeconds, selector, reportFile } = opts;
+
+  return `Monitor ${url} for content changes. ${selector ? `Focus on element matching selector "${selector}".` : 'Monitor entire page content.'} Take initial snapshot/screenshot as baseline. Wait ${intervalSeconds} seconds, refresh page, take new snapshot/screenshot. Use evaluate_script to extract ${selector ? 'targeted element' : 'page'} content and compare with baseline. Detect: text changes, element additions/removals, attribute changes, style changes. Generate ${reportFile} with: timestamp of changes, what changed (before/after), visual diff screenshots, change summary. If no changes detected, report "No changes detected".`;
+}
+
+const prompt = buildPrompt(options);
+
+const claudeSettings: Settings = {};
+
+const allowedTools = [
+  'mcp__chrome-devtools__navigate_page',
+  'mcp__chrome-devtools__new_page',
+  'mcp__chrome-devtools__take_snapshot',
+  'mcp__chrome-devtools__take_screenshot',
+  'mcp__chrome-devtools__evaluate_script',
+  'mcp__chrome-devtools__wait_for',
+  'mcp__chrome-devtools__navigate_page_history',
+  'Write',
+  'TodoWrite',
+];
+
+const mcpConfig = {
+  mcpServers: {
+    'chrome-devtools': {
+      command: 'npx',
+      args: ['chrome-devtools-mcp@latest', '--isolated'],
+    },
+  },
+};
+
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'acceptEdits',
+  'mcp-config': JSON.stringify(mcpConfig),
+  'strict-mcp-config': true,
+};
+
+claude(prompt, defaultFlags)
+  .then((exitCode) => {
+    if (exitCode === 0) {
+      console.log(`\n📄 Report: ${options.reportFile}`);
+    }
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+  });

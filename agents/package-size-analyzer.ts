@@ -1,30 +1,72 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Package Size Analyzer Agent
- *
- * A tiny quick agent that identifies bundle bloat and suggests optimizations:
- * - Blazingly fast analysis of your package.json and bundle size
- * - Identifies heaviest dependencies and their impact on final bundle size
- * - Suggests lighter alternative packages with similar functionality
- * - Detects duplicate dependencies and version conflicts
- * - Analyzes tree-shaking effectiveness and suggests optimizations
- * - Flags packages that are imported but barely used
- * - Generates before/after comparison if you made suggested changes
- * - Perfect for keeping your web app fast and users happy
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from 'node:path';
+import { claude, getPositionals, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const OUTPUT_FILE = 'BUNDLE_ANALYSIS.md';
+const DEFAULT_REPORT = 'BUNDLE_ANALYSIS.md';
 
-async function main() {
-  console.log('=Ê Package Size Analyzer');
-  console.log(`=¡ Project: ${PROJECT_PATH}`);
-  console.log();
+function printHelp(): void {
+  console.log(`
+üì¶ Package Size Analyzer
 
-  const systemPrompt = `You are a Package Size Analyzer agent that helps developers identify and eliminate bundle bloat.
+Usage:
+  bun run agents/package-size-analyzer.ts [project-path]
+
+Options:
+  --report <file>   Output report filename (default: ${DEFAULT_REPORT})
+  --help, -h        Show this help message
+`);
+}
+
+const positionals = getPositionals();
+const values = parsedArgs.values as Record<string, unknown>;
+const argv = process.argv.slice(2);
+
+const help = values.help === true || values.h === true;
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+function readStringFlag(name: string): string | undefined {
+  const raw = values[name];
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    if (arg === `--${name}`) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        return next;
+      }
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      const [, value] = arg.split('=', 2);
+      if (value && value.length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+const projectPath = positionals[0] ? resolve(positionals[0]!) : process.cwd();
+const reportFile = readStringFlag('report') ?? DEFAULT_REPORT;
+
+console.log('=üì¶ Package Size Analyzer');
+console.log(`=üì¶ Project: ${projectPath}`);
+console.log('');
+
+const systemPrompt = `You are a Package Size Analyzer agent that helps developers identify and eliminate bundle bloat.
 
 Your task is to:
 1. Analyze the project's dependencies:
@@ -74,7 +116,7 @@ IMPORTANT:
 - Consider the trade-offs of switching packages (features, maintenance, community support)
 - Include migration difficulty estimates (easy/medium/hard)`;
 
-  const prompt = `Analyze the bundle size and dependencies for this project and suggest optimizations.
+const prompt = `Analyze the bundle size and dependencies for this project and suggest optimizations.
 
 Follow these steps:
 
@@ -108,203 +150,30 @@ Follow these steps:
    - Check for duplicate dependencies in the lock file
    - Identify packages that should be in devDependencies
 
-6. Generate a markdown report saved as '${OUTPUT_FILE}' with this structure:
+6. Generate a markdown report saved as '${reportFile}' with this structure:[...trimmed for brevity...]`;
 
-   # =Ê Bundle Size Analysis Report
+const claudeSettings: Settings = {};
 
-   > Analysis performed on [date]
+const allowedTools = [
+  'Read',
+  'Write',
+  'TodoWrite',
+  'Grep',
+  'WebSearch',
+  'WebFetch',
+];
 
-   ## =  Current State
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(claudeSettings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'acceptEdits',
+  'append-system-prompt': systemPrompt,
+};
 
-   ### Package Manager
-   [npm/yarn/pnpm/bun]
-
-   ### Total Dependencies
-   - **Production:** X packages
-   - **Development:** Y packages
-   - **Total installed size:** [from lock file if available]
-
-   ### Top 10 Heaviest Packages
-
-   | Package | Version | Size (min+gzip) | Usage Frequency |
-   |---------|---------|-----------------|-----------------|
-   | [name]  | [ver]   | XXX KB          | [high/med/low]  |
-   | ...     | ...     | ...             | ...             |
-
-   **Total weight of top 10:** XXX KB
-
-   ## =® Issues Found
-
-   ### Critical (High Impact)
-   1. **[Issue Name]**
-      - **Problem:** [Description]
-      - **Impact:** +XX KB to bundle
-      - **Fix difficulty:** [Easy/Medium/Hard]
-
-   [Repeat for 2-5 critical issues]
-
-   ### Moderate (Medium Impact)
-   [List 2-3 moderate issues]
-
-   ### Minor (Low Impact)
-   [List 1-2 minor issues]
-
-   ## ( Optimization Recommendations
-
-   ### Priority 1: Quick Wins (Easy, High Impact)
-
-   #### Replace [Package A] with [Package B]
-   - **Current size:** XXX KB (min+gzip)
-   - **New size:** YYY KB (min+gzip)
-   - **Savings:** ZZZ KB (XX% reduction)
-   - **Migration difficulty:** Easy
-   - **Why [Package B] is better:** [Explanation]
-
-   **Migration steps:**
-   1. Install replacement: \`npm install [package-b]\`
-   2. Update imports: [example]
-   3. [Additional steps]
-
-   **Code changes example:**
-   \`\`\`typescript
-   // Before
-   import { feature } from '[package-a]';
-
-   // After
-   import { feature } from '[package-b]';
-   \`\`\`
-
-   [Repeat for 2-3 quick wins]
-
-   ### Priority 2: Significant Optimizations (Medium effort, High Impact)
-
-   [Similar structure for 2-3 medium-effort optimizations]
-
-   ### Priority 3: Long-term Improvements (High effort, Medium Impact)
-
-   [Similar structure for 1-2 long-term improvements]
-
-   ## =… Projected Savings
-
-   | Optimization | Difficulty | Size Saved | Implementation Time |
-   |--------------|------------|------------|---------------------|
-   | [Name]       | Easy       | XX KB      | ~30 minutes         |
-   | [Name]       | Medium     | YY KB      | ~2 hours            |
-   | [Name]       | Hard       | ZZ KB      | ~1 day              |
-
-   **Total potential savings:** XXX KB (XX% reduction)
-
-   ## =' Configuration Improvements
-
-   ### Enable Tree-Shaking
-   [If not already enabled, show how to configure it]
-
-   ### Code Splitting Opportunities
-   - [Route 1]: Split heavy library X
-   - [Route 2]: Lazy load feature Y
-   - [Component]: Dynamic import for Z
-
-   ### Import Optimization
-   \`\`\`typescript
-   // L Bad: Imports entire library
-   import _ from 'lodash';
-
-   //  Good: Import only what you need
-   import debounce from 'lodash/debounce';
-   // or
-   import { debounce } from 'lodash-es';
-   \`\`\`
-
-   ## =Ê Duplicate Dependencies
-
-   [If found, list duplicates and suggest resolution]
-
-   ## <Ø Action Plan
-
-   ### This Week (High Priority)
-   - [ ] [Action 1 - Easy win with specific steps]
-   - [ ] [Action 2 - Easy win with specific steps]
-   - [ ] [Action 3 - Quick configuration change]
-
-   ### This Month (Medium Priority)
-   - [ ] [Action 1 - Requires testing]
-   - [ ] [Action 2 - Moderate refactoring]
-
-   ### Future (Low Priority)
-   - [ ] [Action 1 - Large refactor]
-   - [ ] [Action 2 - Nice to have]
-
-   ## =° Best Practices
-
-   - Always check bundle impact before adding new dependencies
-   - Use bundlephobia.com to compare package sizes
-   - Prefer packages with good tree-shaking support
-   - Consider native browser APIs before adding polyfills
-   - Regularly audit dependencies with tools like \`npx depcheck\`
-
-   ## =⁄ Resources
-
-   - [Bundlephobia](https://bundlephobia.com) - Check package sizes
-   - [Package Phobia](https://packagephobia.com) - Install size analysis
-   - [Webpack Bundle Analyzer](https://github.com/webpack-contrib/webpack-bundle-analyzer) - Visualize bundle
-   - [Import Cost VS Code Extension](https://marketplace.visualstudio.com/items?itemName=wix.vscode-import-cost) - See import costs in editor
-
-   ---
-
-   **Next Steps:** Start with the quick wins in the action plan. Re-run this analyzer after implementing optimizations to track progress.
-
-Start by reading the project files, then analyze dependencies and generate the comprehensive optimization report.`;
-
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Read',
-          'Glob',
-          'Grep',
-          'WebSearch',
-          'Bash',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
-
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n Bundle analysis complete!');
-          console.log(`Ò  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`=∞ Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`=  Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n=ƒ Analysis report saved to: ${OUTPUT_FILE}`);
-          console.log('=Ä Follow the action plan to reduce your bundle size!');
-          console.log('=° Tip: Re-run after implementing optimizations to track progress');
-        } else {
-          console.error('\nL Analysis failed:', message.subtype);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('L Error running Package Size Analyzer:', error);
+claude(prompt, defaultFlags)
+  .then((exitCode) => process.exit(exitCode))
+  .catch((error) => {
+    console.error('‚ùå Fatal error:', error);
     process.exit(1);
-  }
-}
-
-main();
+  });
