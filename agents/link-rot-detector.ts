@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Link Rot Detector Agent
@@ -27,33 +27,109 @@
  *   bun run agents/link-rot-detector.ts https://example.com --report links.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface LinkRotOptions {
   url: string;
-  depth?: number;
-  reportFile?: string;
-  checkImages?: boolean;
-  checkExternal?: boolean;
+  depth: number;
+  reportFile: string;
+  checkImages: boolean;
+  checkExternal: boolean;
 }
 
-async function detectLinkRot(options: LinkRotOptions) {
-  const {
+const DEFAULT_DEPTH = 1;
+const DEFAULT_REPORT_FILE = "link-rot-report.md";
+
+function printHelp(): void {
+  console.log(`
+🔗 Link Rot Detector
+
+Usage:
+  bun run agents/link-rot-detector.ts <url> [options]
+
+Arguments:
+  url                     Website URL to scan
+
+Options:
+  --depth <number>        Crawl depth for internal links (default: ${DEFAULT_DEPTH})
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --no-images             Skip image validation
+  --no-external           Skip external link checking
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/link-rot-detector.ts https://example.com
+  bun run agents/link-rot-detector.ts https://example.com --depth 2
+  bun run agents/link-rot-detector.ts https://example.com --no-external
+  bun run agents/link-rot-detector.ts https://example.com --report my-links.md
+
+Issues Detected:
+  - 404 broken links
+  - Broken anchor links
+  - Redirect chains
+  - Slow-loading resources
+  - Mixed content (HTTP on HTTPS)
+  - Broken images
+  - Expired domains
+  - Shortened URLs
+  `);
+}
+
+function parseOptions(): LinkRotOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error("❌ Error: URL is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  try {
+    new URL(url);
+  } catch (error) {
+    console.error("❌ Error: Invalid URL format");
+    process.exit(1);
+  }
+
+  const rawDepth = values.depth;
+  const rawReport = values.report;
+  const checkImages = values["no-images"] !== true;
+  const checkExternal = values["no-external"] !== true;
+
+  const depth = typeof rawDepth === "string" && rawDepth.length > 0
+    ? parseInt(rawDepth, 10)
+    : DEFAULT_DEPTH;
+
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
+
+  if (isNaN(depth) || depth < 1) {
+    console.error("❌ Error: Depth must be a positive number");
+    process.exit(1);
+  }
+
+  return {
     url,
-    depth = 1,
-    reportFile = 'link-rot-report.md',
-    checkImages = true,
-    checkExternal = true,
-  } = options;
+    depth,
+    reportFile,
+    checkImages,
+    checkExternal,
+  };
+}
 
-  console.log('🔗 Link Rot Detector\n');
-  console.log(`URL: ${url}`);
-  console.log(`Crawl Depth: ${depth}`);
-  if (checkImages) console.log('Image Check: Enabled');
-  if (checkExternal) console.log('External Links: Enabled');
-  console.log('');
+function buildPrompt(options: LinkRotOptions): string {
+  const { url, depth, reportFile, checkImages, checkExternal } = options;
 
-  const prompt = `
+  return `
 You are a link integrity specialist using Chrome DevTools MCP to find broken links and dead resources.
 
 Target URL: ${url}
@@ -260,191 +336,79 @@ ${checkExternal ? `
 3. Contact external site owners for broken links
 4. Re-run detector after fixes
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__evaluate_script',
-        'mcp__chrome-devtools__list_network_requests',
-        'mcp__chrome-devtools__get_network_request',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'bypassPermissions',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('🔍 Extracting links...');
-                  } else if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    const url = (input.tool_input as any).url;
-                    console.log(`🌐 Checking: ${url}`);
-                  } else if (toolName === 'mcp__chrome-devtools__list_network_requests') {
-                    console.log('📊 Analyzing network requests...');
-                  } else if (toolName === 'Write') {
-                    console.log(`💾 Generating report: ${reportFile}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Links extracted');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Link rot detection complete!');
-                console.log(`\n📄 Full report: ${reportFile}`);
-                console.log('\nNext steps:');
-                console.log('1. Fix broken links (404s)');
-                console.log('2. Update redirected links');
-                console.log('3. Replace broken images');
-                console.log('4. Re-run detector to verify');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 50,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["depth", "report", "no-images", "no-external", "help", "h"] as const;
 
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        if (!text.includes('tool_use') && text.trim().length > 0) {
-          console.log('\n💡', text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Scan Statistics');
-        console.log('='.repeat(60));
-        console.log(`\nDuration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-        if (message.result) {
-          console.log('\n' + '='.repeat(60));
-          console.log('📝 Summary');
-          console.log('='.repeat(60));
-          console.log('\n' + message.result);
-        }
-      } else {
-        console.error('\n❌ Error:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-🔗 Link Rot Detector
-
-Usage:
-  bun run agents/link-rot-detector.ts <url> [options]
-
-Arguments:
-  url                     Website URL to scan
-
-Options:
-  --depth <number>        Crawl depth for internal links (default: 1)
-  --report <file>         Output file (default: link-rot-report.md)
-  --no-images             Skip image validation
-  --no-external           Skip external link checking
-  --help                  Show this help
-
-Examples:
-  bun run agents/link-rot-detector.ts https://example.com
-  bun run agents/link-rot-detector.ts https://example.com --depth 2
-  bun run agents/link-rot-detector.ts https://example.com --no-external
-  bun run agents/link-rot-detector.ts https://example.com --report my-links.md
-
-Issues Detected:
-  - 404 broken links
-  - Broken anchor links
-  - Redirect chains
-  - Slow-loading resources
-  - Mixed content (HTTP on HTTPS)
-  - Broken images
-  - Expired domains
-  - Shortened URLs
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL is required');
-  process.exit(1);
-}
+console.log("🔗 Link Rot Detector\n");
+console.log(`URL: ${options.url}`);
+console.log(`Crawl Depth: ${options.depth}`);
+if (options.checkImages) console.log("Image Check: Enabled");
+if (options.checkExternal) console.log("External Links: Enabled");
+console.log(`Report: ${options.reportFile}`);
+console.log("");
 
-try {
-  new URL(url);
-} catch (error) {
-  console.error('❌ Error: Invalid URL format');
-  process.exit(1);
-}
+const prompt = buildPrompt(options);
+const settings: Settings = {};
 
-const options: LinkRotOptions = {
-  url,
-  checkImages: !args.includes('--no-images'),
-  checkExternal: !args.includes('--no-external'),
+const allowedTools = [
+  "mcp__chrome-devtools__navigate_page",
+  "mcp__chrome-devtools__new_page",
+  "mcp__chrome-devtools__take_snapshot",
+  "mcp__chrome-devtools__evaluate_script",
+  "mcp__chrome-devtools__list_network_requests",
+  "mcp__chrome-devtools__get_network_request",
+  "Write",
+  "TodoWrite",
+];
+
+const mcpConfig = {
+  mcpServers: {
+    "chrome-devtools": {
+      command: "npx",
+      args: ["chrome-devtools-mcp@latest", "--isolated"],
+    },
+  },
 };
 
-for (let i = 1; i < args.length; i++) {
-  switch (args[i]) {
-    case '--depth':
-      options.depth = parseInt(args[++i] || '1', 10);
-      break;
-    case '--report':
-      options.reportFile = args[++i];
-      break;
-  }
-}
+removeAgentFlags();
 
-detectLinkRot(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  'mcp-config': JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  'strict-mcp-config': true,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Link rot detection complete!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    console.log("\nNext steps:");
+    console.log("1. Fix broken links (404s)");
+    console.log("2. Update redirected links");
+    console.log("3. Replace broken images");
+    console.log("4. Re-run detector to verify");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

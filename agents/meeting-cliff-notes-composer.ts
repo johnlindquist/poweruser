@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Meeting Cliff Notes Composer
@@ -44,10 +44,10 @@
  *   --help                      Show this help message
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { parseArgs } from "util";
+import { promises as fs } from "node:fs";
+import { resolve, basename } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 type OutputFormat = "slack" | "markdown" | "notion" | "email";
 type SummaryLength = "digest" | "standard" | "deep";
@@ -78,7 +78,41 @@ interface MeetingCliffNotesOptions {
 }
 
 function printHelp(): void {
-  console.log(`\nMeeting Cliff Notes Composer\n\nUsage:\n  bun run agents/meeting-cliff-notes-composer.ts [options]\n\nFor detailed flag descriptions see the file header.\n`);
+  console.log(`
+🗒️  Meeting Cliff Notes Composer
+
+Usage:
+  bun run agents/meeting-cliff-notes-composer.ts [options]
+
+Arguments:
+  Positional arguments are treated as manual notes
+
+Options:
+  --title <text>              Meeting title (default: "Engineering Meeting")
+  --date <ISO>                Meeting date (e.g. 2024-06-01)
+  --timezone <tz>             IANA timezone (e.g. America/New_York)
+  --team <name>               Team or group name
+  --project <name>            Primary project or initiative discussed
+  --attendee <name>           Attendee (repeatable)
+  --attendees <list>          Comma-separated attendee list
+  --focus <list>              Comma-separated focus areas or hot topics
+  --transcript <path>         Transcript file (repeatable)
+  --doc <path>                Supplemental document or artifact (repeatable)
+  --note <text>               Manual highlight to include (repeatable)
+  --summary-length <mode>     digest | standard | deep (default: standard)
+  --format <mode>             slack | markdown | notion | email (default: markdown)
+  --followup-days <number>    Default due-date window for follow-ups (default: 5)
+  --highlight-risks           Emphasize risks in the output (default: on)
+  --no-highlight-risks        Disable risk emphasis
+  --include-quotes            Include short verbatim quotes when useful
+  --extra <text>              Additional instructions for the agent (repeatable)
+  --help, -h                  Show this help message
+
+Examples:
+  bun run agents/meeting-cliff-notes-composer.ts --title "Sprint Review"
+  bun run agents/meeting-cliff-notes-composer.ts --transcript meeting.txt --format slack
+  bun run agents/meeting-cliff-notes-composer.ts --attendees "Alice,Bob" --highlight-risks
+  `);
 }
 
 function parseList(input: string | undefined): string[] {
@@ -91,96 +125,146 @@ function parseList(input: string | undefined): string[] {
     .filter((item) => item.length > 0);
 }
 
-function parseArgsFromArgv(argv: string[]): MeetingCliffNotesOptions {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    options: {
-      help: { type: "boolean", default: false },
-      title: { type: "string", default: "Engineering Meeting" },
-      date: { type: "string" },
-      timezone: { type: "string" },
-      team: { type: "string" },
-      project: { type: "string" },
-      attendee: { type: "string", multiple: true },
-      attendees: { type: "string" },
-      focus: { type: "string" },
-      transcript: { type: "string", multiple: true },
-      doc: { type: "string", multiple: true },
-      note: { type: "string", multiple: true },
-      extra: { type: "string", multiple: true },
-      "summary-length": { type: "string", default: "standard" },
-      format: { type: "string", default: "markdown" },
-      "followup-days": { type: "string", default: "5" },
-      "highlight-risks": { type: "boolean", default: true },
-      "no-highlight-risks": { type: "boolean", default: false },
-      "include-quotes": { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-  });
+function parseOptions(): MeetingCliffNotesOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  if (values.help) {
+  if (help) {
     printHelp();
-    process.exit(0);
+    return null;
   }
 
-  const summaryLength = values["summary-length"] as string;
+  const rawTitle = values.title;
+  const title = typeof rawTitle === "string" && rawTitle.length > 0
+    ? rawTitle
+    : "Engineering Meeting";
+
+  const rawSummaryLength = values["summary-length"];
+  const summaryLength = typeof rawSummaryLength === "string" && rawSummaryLength.length > 0
+    ? rawSummaryLength
+    : "standard";
+
   if (summaryLength !== "digest" && summaryLength !== "standard" && summaryLength !== "deep") {
-    throw new Error("--summary-length must be digest, standard, or deep");
+    console.error("❌ Error: --summary-length must be digest, standard, or deep");
+    process.exit(1);
   }
 
-  const format = values.format as string;
+  const rawFormat = values.format;
+  const format = typeof rawFormat === "string" && rawFormat.length > 0
+    ? rawFormat
+    : "markdown";
+
   if (format !== "slack" && format !== "markdown" && format !== "notion" && format !== "email") {
-    throw new Error("--format must be slack, markdown, notion, or email");
+    console.error("❌ Error: --format must be slack, markdown, notion, or email");
+    process.exit(1);
   }
 
-  const followupDays = Number.parseInt(values["followup-days"] as string, 10);
+  const rawFollowupDays = values["followup-days"];
+  const followupDaysStr = typeof rawFollowupDays === "string" && rawFollowupDays.length > 0
+    ? rawFollowupDays
+    : "5";
+  const followupDays = Number.parseInt(followupDaysStr, 10);
+
   if (Number.isNaN(followupDays) || followupDays <= 0) {
-    throw new Error("--followup-days must be a positive integer");
+    console.error("❌ Error: --followup-days must be a positive integer");
+    process.exit(1);
   }
 
   const attendees: string[] = [];
-  if (values.attendee) {
-    attendees.push(...(values.attendee as string[]));
+  const rawAttendee = values.attendee;
+  if (Array.isArray(rawAttendee)) {
+    attendees.push(...rawAttendee);
+  } else if (typeof rawAttendee === "string") {
+    attendees.push(rawAttendee);
   }
-  if (values.attendees) {
-    attendees.push(...parseList(values.attendees as string));
+
+  const rawAttendees = values.attendees;
+  if (typeof rawAttendees === "string") {
+    attendees.push(...parseList(rawAttendees));
   }
 
-  const focusAreas = values.focus ? parseList(values.focus as string) : [];
+  const rawFocus = values.focus;
+  const focusAreas = typeof rawFocus === "string" ? parseList(rawFocus) : [];
 
-  const highlightRisks = values["no-highlight-risks"] ? false : (values["highlight-risks"] as boolean);
+  const noHighlightRisks = values["no-highlight-risks"] === true;
+  const highlightRisks = !noHighlightRisks;
 
-  const options: MeetingCliffNotesOptions = {
-    title: values.title as string,
-    meetingDate: values.date as string | undefined,
-    timezone: values.timezone as string | undefined,
-    team: values.team as string | undefined,
-    project: values.project as string | undefined,
+  const includeQuotes = values["include-quotes"] === true;
+
+  const rawTranscript = values.transcript;
+  const transcriptPaths: string[] = [];
+  if (Array.isArray(rawTranscript)) {
+    transcriptPaths.push(...rawTranscript);
+  } else if (typeof rawTranscript === "string") {
+    transcriptPaths.push(rawTranscript);
+  }
+
+  const rawDoc = values.doc;
+  const docPaths: string[] = [];
+  if (Array.isArray(rawDoc)) {
+    docPaths.push(...rawDoc);
+  } else if (typeof rawDoc === "string") {
+    docPaths.push(rawDoc);
+  }
+
+  const rawNote = values.note;
+  const manualNotes: string[] = [];
+  if (Array.isArray(rawNote)) {
+    manualNotes.push(...rawNote);
+  } else if (typeof rawNote === "string") {
+    manualNotes.push(rawNote);
+  }
+  manualNotes.push(...positionals);
+
+  const rawExtra = values.extra;
+  const extraInstructions: string[] = [];
+  if (Array.isArray(rawExtra)) {
+    extraInstructions.push(...rawExtra);
+  } else if (typeof rawExtra === "string") {
+    extraInstructions.push(rawExtra);
+  }
+
+  const rawDate = values.date;
+  const meetingDate = typeof rawDate === "string" && rawDate.length > 0 ? rawDate : undefined;
+
+  const rawTimezone = values.timezone;
+  const timezone = typeof rawTimezone === "string" && rawTimezone.length > 0 ? rawTimezone : undefined;
+
+  const rawTeam = values.team;
+  const team = typeof rawTeam === "string" && rawTeam.length > 0 ? rawTeam : undefined;
+
+  const rawProject = values.project;
+  const project = typeof rawProject === "string" && rawProject.length > 0 ? rawProject : undefined;
+
+  return {
+    title,
+    meetingDate,
+    timezone,
+    team,
+    project,
     attendees,
     focusAreas,
-    transcriptPaths: (values.transcript as string[] | undefined) ?? [],
-    docPaths: (values.doc as string[] | undefined) ?? [],
-    manualNotes: [...((values.note as string[] | undefined) ?? []), ...positionals],
-    extraInstructions: (values.extra as string[] | undefined) ?? [],
+    transcriptPaths,
+    docPaths,
+    manualNotes,
+    extraInstructions,
     followupWindowDays: followupDays,
     summaryLength: summaryLength as SummaryLength,
     format: format as OutputFormat,
     highlightRisks,
-    includeQuotes: values["include-quotes"] as boolean,
+    includeQuotes,
   };
-
-  return options;
 }
 
 async function readResources(paths: string[], kind: "Transcript" | "Document"): Promise<LoadedResource[]> {
   const resources: LoadedResource[] = [];
 
   for (const relativePath of paths) {
-    const resolved = path.resolve(relativePath);
+    const resolved = resolve(relativePath);
     try {
       const content = await fs.readFile(resolved, "utf8");
       resources.push({
-        label: `${kind}: ${path.basename(resolved)}`,
+        label: `${kind}: ${basename(resolved)}`,
         path: resolved,
         content: content.trim(),
       });
@@ -317,56 +401,97 @@ ${resourcesSection}
 Deliver the final briefing only, without preamble or tool logs.`;
 }
 
-async function main(): Promise<void> {
-  try {
-    const options = parseArgsFromArgv(process.argv.slice(2));
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "title",
+    "date",
+    "timezone",
+    "team",
+    "project",
+    "attendee",
+    "attendees",
+    "focus",
+    "transcript",
+    "doc",
+    "note",
+    "extra",
+    "summary-length",
+    "format",
+    "followup-days",
+    "highlight-risks",
+    "no-highlight-risks",
+    "include-quotes",
+    "help",
+    "h",
+  ] as const;
 
-    if (
-      options.transcriptPaths.length === 0 &&
-      options.docPaths.length === 0 &&
-      options.manualNotes.length === 0
-    ) {
-      console.warn("⚠️  No transcripts, documents, or notes supplied. The agent will rely on defaults.");
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-
-    const [transcripts, docs, notes] = await Promise.all([
-      readResources(options.transcriptPaths, "Transcript"),
-      readResources(options.docPaths, "Document"),
-      Promise.resolve(buildManualNotes(options.manualNotes)),
-    ]);
-
-    const prompt = buildPrompt(options, transcripts, docs, notes);
-
-    console.log("🗒️  Composing meeting cliff notes...\n");
-
-    const result = query({
-      prompt,
-      options: {
-        allowedTools: ["Read", "Grep", "Glob", "TodoWrite", "Write", "WebFetch"],
-        permissionMode: "bypassPermissions",
-        maxTurns: 8,
-      },
-    });
-
-    let finalReport = "";
-
-    for await (const message of result) {
-      if (message.type === "result" && message.subtype === "success") {
-        finalReport = message.result;
-      }
-    }
-
-    if (finalReport.length === 0) {
-      throw new Error("No output produced by the agent.");
-    }
-
-    console.log(finalReport);
-    console.log("\n✅ Briefing ready.");
-  } catch (error) {
-    console.error("❌ Unable to compose meeting cliff notes:");
-    console.error((error as Error).message);
-    process.exit(1);
   }
 }
 
-await main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🗒️  Meeting Cliff Notes Composer\n");
+console.log(`Title: ${options.title}`);
+if (options.meetingDate) console.log(`Date: ${options.meetingDate}`);
+if (options.timezone) console.log(`Timezone: ${options.timezone}`);
+if (options.team) console.log(`Team: ${options.team}`);
+if (options.project) console.log(`Project: ${options.project}`);
+if (options.attendees.length > 0) console.log(`Attendees: ${options.attendees.join(", ")}`);
+console.log(`Format: ${options.format}`);
+console.log(`Summary Length: ${options.summaryLength}`);
+console.log("");
+
+if (
+  options.transcriptPaths.length === 0 &&
+  options.docPaths.length === 0 &&
+  options.manualNotes.length === 0
+) {
+  console.warn("⚠️  No transcripts, documents, or notes supplied. The agent will rely on defaults.\n");
+}
+
+const [transcripts, docs, notes] = await Promise.all([
+  readResources(options.transcriptPaths, "Transcript"),
+  readResources(options.docPaths, "Document"),
+  Promise.resolve(buildManualNotes(options.manualNotes)),
+]);
+
+const prompt = buildPrompt(options, transcripts, docs, notes);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Grep",
+  "Glob",
+  "TodoWrite",
+  "Write",
+  "WebFetch",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Briefing ready.");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Unable to compose meeting cliff notes:");
+  console.error((error as Error).message);
+  process.exit(1);
+}

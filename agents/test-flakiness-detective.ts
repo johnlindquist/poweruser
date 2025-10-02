@@ -1,20 +1,31 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
-/**
- * Test Flakiness Detective
- *
- * A practical agent that hunts down and helps fix unreliable tests.
- * Analyzes test output history to identify patterns of flaky tests and suggests fixes.
- *
- * Usage:
- *   bun run agents/test-flakiness-detective.ts [test-file-pattern]
- *
- * Examples:
- *   bun run agents/test-flakiness-detective.ts "glob-pattern"
- *   bun run agents/test-flakiness-detective.ts src/components/Button.test.tsx
- */
+// Test Flakiness Detective
+//
+// A practical agent that hunts down and helps fix unreliable tests.
+// Analyzes test output history to identify patterns of flaky tests and suggests fixes.
+//
+// Usage:
+//   bun run agents/test-flakiness-detective.ts [test-file-pattern] [options]
+//
+// Examples:
+//   bun run agents/test-flakiness-detective.ts
+//   bun run agents/test-flakiness-detective.ts "src/**/*.test.ts"
+//   bun run agents/test-flakiness-detective.ts src/components/Button.test.tsx --fix
+//   bun run agents/test-flakiness-detective.ts --report flakiness.md
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+interface TestFlakinessOptions {
+  testPattern: string;
+  autoFix: boolean;
+  reportFile: string;
+  runTests: boolean;
+}
+
+const DEFAULT_TEST_PATTERN = "**/*.{test,spec}.{ts,tsx,js,jsx}";
+const DEFAULT_REPORT_FILE = "test-flakiness-report.md";
 
 const SYSTEM_PROMPT = `You are a Test Flakiness Detective, an expert at identifying and fixing unreliable tests.
 
@@ -75,14 +86,60 @@ For each flaky test found, provide:
 
 Work efficiently and focus on the most impactful fixes first.`;
 
-async function main() {
-  const args = process.argv.slice(2);
-  const testPattern = args[0] || '**/*.{test,spec}.{ts,tsx,js,jsx}';
+function printHelp(): void {
+  console.log(`
+🔍 Test Flakiness Detective
 
-  console.log('🔍 Test Flakiness Detective starting...\n');
-  console.log(`Analyzing tests matching: ${testPattern}\n`);
+Usage:
+  bun run agents/test-flakiness-detective.ts [test-file-pattern] [options]
 
-  const prompt = `Analyze tests matching the pattern "${testPattern}" for flakiness issues.
+Arguments:
+  test-file-pattern       Test file pattern to analyze (default: ${DEFAULT_TEST_PATTERN})
+
+Options:
+  --fix                   Automatically apply safe fixes to test files
+  --report <file>         Output report file (default: ${DEFAULT_REPORT_FILE})
+  --run-tests             Run tests to detect flakiness (optional)
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/test-flakiness-detective.ts
+  bun run agents/test-flakiness-detective.ts "src/**/*.test.ts"
+  bun run agents/test-flakiness-detective.ts src/components/Button.test.tsx --fix
+  bun run agents/test-flakiness-detective.ts --report flakiness.md --run-tests
+  `);
+}
+
+function parseOptions(): TestFlakinessOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const testPattern = positionals[0] || DEFAULT_TEST_PATTERN;
+  const autoFix = values.fix === true;
+  const runTests = values["run-tests"] === true || values.runTests === true;
+
+  const rawReport = values.report;
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
+
+  return {
+    testPattern,
+    autoFix,
+    reportFile,
+    runTests,
+  };
+}
+
+function buildPrompt(options: TestFlakinessOptions): string {
+  const { testPattern, reportFile, runTests, autoFix } = options;
+
+  return `Analyze tests matching the pattern "${testPattern}" for flakiness issues.
 
 Please follow these steps:
 
@@ -94,68 +151,80 @@ Please follow these steps:
    - Missing cleanup (afterEach, beforeEach issues)
    - Network calls without mocks (fetch, axios without mocks)
 3. **Read suspicious files**: Examine files that show warning signs
-4. **Run tests** (optional): If there's a test script in package.json, run it to observe behavior
-5. **Generate report**: Create a comprehensive flakiness report with:
+${runTests ? "4. **Run tests**: Execute the test suite multiple times to observe flaky behavior" : ""}
+${autoFix ? "5. **Apply fixes**: Use Edit tool to apply safe, deterministic fixes to flaky tests" : ""}
+${runTests ? "6" : "4"}. **Generate report**: Save a comprehensive flakiness report to "${reportFile}" with:
    - List of potentially flaky tests (ranked by severity)
    - Root cause analysis for each
    - Specific fix recommendations with code examples
-   - Summary of findings
+   - Summary of findings and next steps
 
-Focus on actionable insights and practical fixes. Prioritize high-severity issues.`;
+Focus on actionable insights and practical fixes. Prioritize high-severity issues.`.trim();
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: SYSTEM_PROMPT
-        },
-        model: 'claude-sonnet-4-5-20250929',
-        allowedTools: [
-          'Glob',
-          'Grep',
-          'Read',
-          'Bash',
-          'Edit',
-          'Write',
-          'TodoWrite'
-        ],
-        maxTurns: 20,
-        permissionMode: 'acceptEdits',
-      },
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["fix", "report", "run-tests", "runTests", "help", "h"] as const;
 
-    // Stream the results
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Print assistant messages
-        for (const content of message.message.content) {
-          if (content.type === 'text') {
-            console.log(content.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        // Print final results
-        console.log('\n' + '='.repeat(80));
-        if (message.subtype === 'success') {
-          console.log('✅ Analysis complete!');
-          console.log(`\nTotal turns: ${message.num_turns}`);
-          console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        } else {
-          console.log('⚠️  Analysis completed with limitations');
-          console.log(`Reason: ${message.subtype}`);
-        }
-        console.log('='.repeat(80));
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-
-  } catch (error) {
-    console.error('❌ Error running Test Flakiness Detective:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔍 Test Flakiness Detective\n");
+console.log(`Test Pattern: ${options.testPattern}`);
+console.log(`Auto-fix: ${options.autoFix ? "Enabled" : "Disabled"}`);
+console.log(`Run Tests: ${options.runTests ? "Yes" : "No"}`);
+console.log(`Report: ${options.reportFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Bash",
+  "Write",
+  ...(options.autoFix ? ["Edit"] : []),
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "append-system-prompt": SYSTEM_PROMPT,
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoFix ? "acceptEdits" : "default",
+  ...(options.autoFix ? { "dangerously-skip-permissions": true } : {}),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Test flakiness analysis complete!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    if (options.autoFix) {
+      console.log("🔧 Auto-fixes applied - review changes before committing");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the flakiness report");
+    console.log("2. Prioritize high-severity flaky tests");
+    console.log("3. Apply recommended fixes");
+    console.log("4. Re-run tests to verify stability");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

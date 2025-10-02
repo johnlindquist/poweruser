@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Smart Commit Message Generator
@@ -14,10 +14,14 @@
  * - Suggests commit scope and breaking change indicators
  *
  * Usage:
- *   bun run agents/smart-commit-message-generator.ts
+ *   bun run agents/smart-commit-message-generator.ts [options]
+ *
+ * Options:
+ *   --help, -h              Show help message
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 const SYSTEM_PROMPT = `You are a git commit message expert. Your job is to analyze staged changes and generate meaningful, conventional commit messages.
 
@@ -81,13 +85,65 @@ Work quickly - aim to complete in under 5 seconds!
 
 If there are no staged changes, inform the user and suggest staging changes first.`;
 
-async function main() {
-  console.log('🔍 Analyzing staged changes...\n');
+function printHelp(): void {
+  console.log(`
+📝 Smart Commit Message Generator
 
-  const startTime = Date.now();
+Usage:
+  bun run agents/smart-commit-message-generator.ts [options]
 
-  const result = query({
-    prompt: `Analyze the staged git changes and generate a meaningful commit message following conventional commits format.
+Options:
+  --help, -h              Show this help
+
+Description:
+  Analyzes staged git changes and generates meaningful commit messages
+  following conventional commits format. The agent will:
+  - Examine git diff to understand technical changes
+  - Read changed files for broader context
+  - Analyze recent commits to match project style
+  - Suggest commit type, scope, and breaking change indicators
+
+Example:
+  # Stage your changes first
+  git add .
+
+  # Generate commit message
+  bun run agents/smart-commit-message-generator.ts
+  `);
+}
+
+function parseOptions(): boolean {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return false;
+  }
+
+  return true;
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const shouldRun = parseOptions();
+if (!shouldRun) {
+  process.exit(0);
+}
+
+console.log("📝 Smart Commit Message Generator\n");
+console.log("🔍 Analyzing staged changes...\n");
+
+const prompt = `Analyze the staged git changes and generate a meaningful commit message following conventional commits format.
 
 Steps to follow:
 1. Run git status to see staged files
@@ -98,48 +154,30 @@ Steps to follow:
 6. Read important changed files to understand the semantic meaning
 7. Generate the commit message with all relevant metadata
 
-Explain your reasoning briefly, and present the final commit message in a markdown code block for easy copying.`,
-    options: {
-      systemPrompt: SYSTEM_PROMPT,
-      model: 'claude-sonnet-4-5-20250929',
-      allowedTools: ['Bash', 'Read', 'Grep'],
-      permissionMode: 'bypassPermissions',
-      cwd: process.cwd(),
-      maxTurns: 15,
-    },
-  });
+Explain your reasoning briefly, and present the final commit message in a markdown code block for easy copying.`;
 
-  // Stream the response
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const content of message.message.content) {
-        if (content.type === 'text') {
-          console.log(content.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsed = Date.now() - startTime;
+const settings: Settings = {};
 
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(80));
-        console.log('✅ Commit message generated successfully!');
-        console.log(`⏱️  Time: ${(elapsed / 1000).toFixed(2)}s (API: ${(message.duration_api_ms / 1000).toFixed(2)}s)`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-        console.log('='.repeat(80));
-        console.log('\n💡 To commit with this message:');
-        console.log('   1. Copy the message from the code block above');
-        console.log('   2. Run: git commit -F - (then paste and press Ctrl+D)');
-        console.log('   Or save to file: git commit -F commit_msg.txt\n');
-      } else {
-        console.log('\n❌ Error during analysis');
-        console.log(`⏱️  Time: ${(elapsed / 1000).toFixed(2)}s`);
-      }
-    }
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: "Bash Read Grep TodoWrite",
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": SYSTEM_PROMPT,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n💡 To commit with this message:");
+    console.log("   1. Copy the message from the code block above");
+    console.log("   2. Run: git commit -F - (then paste and press Ctrl+D)");
+    console.log("   Or save to file: git commit -F commit_msg.txt\n");
   }
-}
-
-main().catch((error) => {
-  console.error('Error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

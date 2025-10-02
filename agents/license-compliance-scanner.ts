@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * License Compliance Scanner Agent
@@ -12,22 +12,89 @@
  * - Generates a clean license summary report with recommendations
  * - Suggests alternative packages when license issues are found
  * - Perfect for startups, freelancers, and teams who need quick license compliance checks
+ *
+ * Usage:
+ *   bun run agents/license-compliance-scanner.ts [path] [options]
+ *
+ * Examples:
+ *   # Scan current directory
+ *   bun run agents/license-compliance-scanner.ts
+ *
+ *   # Scan specific project
+ *   bun run agents/license-compliance-scanner.ts /path/to/project
+ *
+ *   # Scan proprietary project with custom output
+ *   bun run agents/license-compliance-scanner.ts --proprietary --output compliance-report.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const PROJECT_LICENSE = process.argv.includes('--proprietary') ? 'proprietary' : 'open-source';
-const OUTPUT_FILE = process.argv.includes('--output')
-  ? process.argv[process.argv.indexOf('--output') + 1] || 'LICENSE-REPORT.md'
-  : 'LICENSE-REPORT.md';
+interface LicenseScanOptions {
+  projectPath: string;
+  projectType: "proprietary" | "open-source";
+  outputFile: string;
+}
 
-async function main() {
-  console.log('⚖️  License Compliance Scanner');
-  console.log(`📁 Scanning project: ${PROJECT_PATH}`);
-  console.log(`📋 Project type: ${PROJECT_LICENSE}`);
-  console.log(`📄 Output report: ${OUTPUT_FILE}`);
-  console.log();
+const DEFAULT_OUTPUT_FILE = "LICENSE-REPORT.md";
+
+function printHelp(): void {
+  console.log(`
+⚖️  License Compliance Scanner
+
+Usage:
+  bun run agents/license-compliance-scanner.ts [path] [options]
+
+Arguments:
+  path                    Project directory to scan (default: current directory)
+
+Options:
+  --proprietary           Mark project as proprietary (flags GPL/AGPL as critical)
+  --output <file>         Output file (default: ${DEFAULT_OUTPUT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/license-compliance-scanner.ts
+  bun run agents/license-compliance-scanner.ts /path/to/project
+  bun run agents/license-compliance-scanner.ts --proprietary --output report.md
+  `);
+}
+
+function parseOptions(): LicenseScanOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const projectPath = positionals[0] ? resolve(positionals[0]) : process.cwd();
+  const projectType = values.proprietary === true ? "proprietary" : "open-source";
+
+  const rawOutput = values.output;
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  return {
+    projectPath,
+    projectType,
+    outputFile,
+  };
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log('⚖️  License Compliance Scanner');
+console.log(`📁 Scanning project: ${options.projectPath}`);
+console.log(`📋 Project type: ${options.projectType}`);
+console.log(`📄 Output report: ${options.outputFile}`);
+console.log();
 
   const systemPrompt = `You are a License Compliance Scanner agent that helps developers understand and manage open source license compliance.
 
@@ -76,11 +143,11 @@ IMPORTANT:
 - Provide specific package alternatives when possible
 - Make the report actionable with clear priorities`;
 
-  const prompt = `Scan the project at: ${PROJECT_PATH} for license compliance issues.
+  const prompt = `Scan the project at: ${options.projectPath} for license compliance issues.
 
 Project context:
-- Project license type: ${PROJECT_LICENSE}
-${PROJECT_LICENSE === 'proprietary' ? '- ⚠️  Extra caution needed for GPL/AGPL licenses' : '- License compatibility still matters for redistribution'}
+- Project license type: ${options.projectType}
+${options.projectType === 'proprietary' ? '- ⚠️  Extra caution needed for GPL/AGPL licenses' : '- License compatibility still matters for redistribution'}
 
 Step-by-step process:
 
@@ -106,21 +173,21 @@ Step-by-step process:
    - LGPL, MPL, EPL
    - May require compliance steps
 
-   🚨 **Strong Copyleft (HIGH RISK ${PROJECT_LICENSE === 'proprietary' ? 'FOR PROPRIETARY' : ''})**
+   🚨 **Strong Copyleft (HIGH RISK ${options.projectType === 'proprietary' ? 'FOR PROPRIETARY' : ''})**
    - GPL-2.0, GPL-3.0, AGPL-3.0
-   ${PROJECT_LICENSE === 'proprietary' ? '- Generally incompatible with proprietary software' : '- Requires matching license or careful isolation'}
+   ${options.projectType === 'proprietary' ? '- Generally incompatible with proprietary software' : '- Requires matching license or careful isolation'}
 
    ❌ **Unknown/Missing**
    - No license information found
    - Proprietary or unclear licensing
 
 4. Identify specific compliance issues:
-   - List any GPL/AGPL dependencies ${PROJECT_LICENSE === 'proprietary' ? '(CRITICAL for proprietary projects)' : ''}
+   - List any GPL/AGPL dependencies ${options.projectType === 'proprietary' ? '(CRITICAL for proprietary projects)' : ''}
    - List dependencies with missing licenses
    - Flag unusual or deprecated licenses
    - Note any license compatibility conflicts
 
-5. Generate a comprehensive report saved as '${OUTPUT_FILE}':
+5. Generate a comprehensive report saved as '${options.outputFile}':
 
    # License Compliance Report
 
@@ -184,56 +251,54 @@ IMPORTANT:
 - Provide actionable alternatives for problematic dependencies
 - Make the report useful for both technical and legal reviewers`;
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Glob',
-          'Read',
-          'Bash',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["proprietary", "output", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ License compliance scan complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Report saved to: ${OUTPUT_FILE}`);
-          console.log('\n💡 Tips:');
-          console.log('   - Review any 🚨 critical issues immediately');
-          console.log('   - Consider running this scan in your CI/CD pipeline');
-          console.log('   - Run with --proprietary flag if your project is closed-source');
-        } else {
-          console.error('\n❌ License scan failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running license compliance scanner:', error);
-    process.exit(1);
   }
 }
 
-main();
+// Change working directory if needed
+if (options.projectPath !== process.cwd()) {
+  process.chdir(options.projectPath);
+}
+
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Read",
+  "Bash",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ License compliance scan complete!\n");
+    console.log(`📄 Report saved to: ${options.outputFile}`);
+    console.log("\n💡 Tips:");
+    console.log("   - Review any 🚨 critical issues immediately");
+    console.log("   - Consider running this scan in your CI/CD pipeline");
+    console.log("   - Run with --proprietary flag if your project is closed-source");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Error running license compliance scanner:", error);
+  process.exit(1);
+}

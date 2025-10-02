@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Quick JSDoc Generator Agent
@@ -12,29 +12,109 @@
  * - Completes in under 5 seconds for instant productivity boost
  *
  * Usage:
- *   bun run agents/quick-jsdoc-generator.ts <file-path> [function-name]
+ *   bun run agents/quick-jsdoc-generator.ts <file-path> [function-name] [options]
+ *
+ * Examples:
+ *   # Document a specific function
+ *   bun run agents/quick-jsdoc-generator.ts src/utils.ts calculateSum
+ *
+ *   # Document all exports in a file
+ *   bun run agents/quick-jsdoc-generator.ts src/api.ts
+ *
+ *   # Use JSDoc style with examples
+ *   bun run agents/quick-jsdoc-generator.ts src/helpers.ts --style jsdoc --examples
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type DocStyle = "jsdoc" | "tsdoc";
 
 interface JSDocOptions {
   filePath: string;
   targetName?: string;
-  style?: 'jsdoc' | 'tsdoc';
-  includeExamples?: boolean;
+  style: DocStyle;
+  includeExamples: boolean;
 }
 
-async function generateJSDoc(options: JSDocOptions) {
-  const { filePath, targetName, style = 'tsdoc', includeExamples = false } = options;
+const DEFAULT_STYLE: DocStyle = "tsdoc";
 
-  console.log('📝 Quick JSDoc Generator\n');
-  console.log(`File: ${filePath}`);
-  if (targetName) {
-    console.log(`Target: ${targetName}`);
+function printHelp(): void {
+  console.log(`
+📝 Quick JSDoc Generator
+
+Generates documentation comments in seconds!
+
+Usage:
+  bun run agents/quick-jsdoc-generator.ts <file-path> [function-name] [options]
+
+Arguments:
+  file-path              Path to the source file
+  function-name          Optional: specific function or class to document
+
+Options:
+  --style <type>         Documentation style (jsdoc|tsdoc, default: ${DEFAULT_STYLE})
+  --examples             Include @example tags
+  --help, -h             Show this help
+
+Examples:
+  # Document a specific function
+  bun run agents/quick-jsdoc-generator.ts src/utils.ts calculateSum
+
+  # Document all exports in a file
+  bun run agents/quick-jsdoc-generator.ts src/api.ts
+
+  # Use JSDoc style with examples
+  bun run agents/quick-jsdoc-generator.ts src/helpers.ts --style jsdoc --examples
+  `);
+}
+
+function parseOptions(): JSDocOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help || positionals.length === 0) {
+    printHelp();
+    return null;
   }
-  console.log(`Style: ${style}\n`);
 
-  const prompt = targetName
+  const filePath = positionals[0];
+  if (!filePath) {
+    console.error("❌ Error: File path is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  // Check if second positional is a target name (not a flag)
+  const targetName = positionals[1] && !positionals[1].startsWith("--")
+    ? positionals[1]
+    : undefined;
+
+  const rawStyle = values.style;
+  const includeExamples = values.examples === true;
+
+  const style = typeof rawStyle === "string" && rawStyle.length > 0
+    ? (rawStyle.toLowerCase() as DocStyle)
+    : DEFAULT_STYLE;
+
+  if (style !== "jsdoc" && style !== "tsdoc") {
+    console.error("❌ Error: Invalid style. Must be 'jsdoc' or 'tsdoc'");
+    process.exit(1);
+  }
+
+  return {
+    filePath: resolve(filePath),
+    targetName,
+    style,
+    includeExamples,
+  };
+}
+
+function buildPrompt(options: JSDocOptions): string {
+  const { filePath, targetName, style, includeExamples } = options;
+
+  return targetName
     ? `
 Generate ${style.toUpperCase()} documentation comments for the function or class named "${targetName}" in the file "${filePath}".
 
@@ -46,12 +126,12 @@ Your task:
    - @param tags for each parameter with type and description
    - @returns tag with return type and description
    - @throws tag if the function can throw errors
-   ${includeExamples ? '- @example tag with a usage example' : ''}
+   ${includeExamples ? "- @example tag with a usage example" : ""}
 4. Use the Edit tool to insert the documentation comment right before the function/class declaration
 5. Preserve existing indentation and code style
 
 Requirements:
-- Use ${style === 'tsdoc' ? 'TSDoc' : 'JSDoc'} format
+- Use ${style === "tsdoc" ? "TSDoc" : "JSDoc"} format
 - Keep descriptions concise but informative
 - Infer types from TypeScript annotations when available
 - If the function already has documentation, enhance it rather than replace it
@@ -70,172 +150,71 @@ Your task:
    - @param tags for parameters
    - @returns tag for return values
    - @throws tag if applicable
-   ${includeExamples ? '- @example tag with usage example' : ''}
+   ${includeExamples ? "- @example tag with usage example" : ""}
 4. Use the Edit tool to add documentation to each function/class
 5. Preserve existing indentation and code style
 
 Requirements:
-- Use ${style === 'tsdoc' ? 'TSDoc' : 'JSDoc'} format
+- Use ${style === "tsdoc" ? "TSDoc" : "JSDoc"} format
 - Process functions in order from top to bottom
 - Skip functions that already have complete documentation
 - Make minimal edits - only add documentation comments
 
 Do not modify any function/class code, only add documentation comments.
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      // Only allow necessary tools for speed
-      allowedTools: ['Read', 'Edit', 'TodoWrite'],
-      // Auto-accept edits to speed things up
-      permissionMode: 'acceptEdits',
-      // Use Haiku for maximum speed
-      model: 'claude-haiku-4-5-20250903',
-      // Limit thinking tokens for speed
-      maxThinkingTokens: 4000,
-      // Limit turns for quick completion
-      maxTurns: 5,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse' && input.tool_name === 'Edit') {
-                  const toolInput = input.tool_input as any;
-                  console.log(`✍️  Adding documentation to ${toolInput.file_path}`);
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'Edit') {
-                  console.log(`✅ Documentation added successfully`);
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["style", "examples", "help", "h"] as const;
 
-  let startTime = Date.now();
-
-  // Stream results
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        // Show brief progress updates
-        const text = textContent.text;
-        if (text.includes('Reading') || text.includes('Analyzing') || text.includes('Generating')) {
-          console.log(`💭 ${text.substring(0, 80)}...`);
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(50));
-        console.log('✨ Documentation Generated!');
-        console.log('='.repeat(50));
-        console.log(`⚡ Completed in ${elapsedTime}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(
-          `📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`🚀 Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-      } else {
-        console.error('\n❌ Error:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-📝 Quick JSDoc Generator
-
-Generates documentation comments in seconds!
-
-Usage:
-  bun run agents/quick-jsdoc-generator.ts <file-path> [function-name] [options]
-
-Arguments:
-  file-path              Path to the source file
-  function-name          Optional: specific function or class to document
-
-Options:
-  --style <type>         Documentation style (jsdoc|tsdoc, default: tsdoc)
-  --examples             Include @example tags
-  --help                 Show this help message
-
-Examples:
-  # Document a specific function
-  bun run agents/quick-jsdoc-generator.ts src/utils.ts calculateSum
-
-  # Document all exports in a file
-  bun run agents/quick-jsdoc-generator.ts src/api.ts
-
-  # Use JSDoc style with examples
-  bun run agents/quick-jsdoc-generator.ts src/helpers.ts --style jsdoc --examples
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-const filePath = args[0];
-
-if (!filePath) {
-  console.error('❌ Error: File path is required');
-  process.exit(1);
+console.log("📝 Quick JSDoc Generator\n");
+console.log(`File: ${options.filePath}`);
+if (options.targetName) {
+  console.log(`Target: ${options.targetName}`);
 }
+console.log(`Style: ${options.style}`);
+console.log(`Examples: ${options.includeExamples ? "Yes" : "No"}`);
+console.log("");
 
-// Parse options
-const options: JSDocOptions = {
-  filePath,
-  style: 'tsdoc',
-  includeExamples: false,
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = ["Read", "Edit", "TodoWrite"];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-haiku-4-5-20250903",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "dangerously-skip-permissions": true,
 };
 
-let i = 1;
-// Check if second arg is a target name (not a flag)
-const possibleTarget = args[i];
-if (possibleTarget && !possibleTarget.startsWith('--')) {
-  options.targetName = possibleTarget;
-  i++;
-}
-
-// Parse remaining flags
-for (; i < args.length; i++) {
-  switch (args[i]) {
-    case '--style':
-      const styleValue = args[++i];
-      if (styleValue) {
-        options.style = styleValue as 'jsdoc' | 'tsdoc';
-      }
-      break;
-    case '--examples':
-      options.includeExamples = true;
-      break;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Documentation generated successfully!");
+    console.log("\nNext steps:");
+    console.log("1. Review the generated documentation");
+    console.log("2. Adjust descriptions if needed");
+    console.log("3. Commit the changes");
   }
-}
-
-// Run the generator
-generateJSDoc(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

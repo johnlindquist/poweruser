@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Schema Drift Radar Agent
@@ -27,8 +27,9 @@
  *   --help                      Show this help text
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 type SeverityLevel = 'low' | 'medium' | 'high';
 
@@ -46,110 +47,129 @@ interface SchemaDriftRadarOptions {
   dryRun: boolean;
   severity: SeverityLevel;
   ticketHints: string[];
-  showHelp: boolean;
-  unknownArgs: string[];
 }
 
-function printUsage() {
-  console.log(`\nSchema Drift Radar\n===================\n\n`);
-  console.log(`Usage: bun run agents/schema-drift-radar.ts [options]\n`);
-  console.log(`Options:`);
-  console.log(`  --project <path>            Path to the service or monorepo (default: cwd)`);
-  console.log(`  --schema-dump env=path      Register a schema dump for an environment (repeatable)`);
-  console.log(`  --orm <name>                Hint ORM/framework in use (repeatable)`);
-  console.log(`  --output <file>             Markdown file to write the drift report (default: schema-drift-report.md)`);
-  console.log(`  --generate-migrations       Ask the agent to draft SQL/ORM migration snippets`);
-  console.log(`  --no-dry-run                Allow the agent to stage file edits (still never run migrations)`);
-  console.log(`  --severity <low|medium|high>Focus attention on issues at or above this severity (default: medium)`);
-  console.log(`  --ticket <id>               Link ticket/ADR identifiers for additional context (repeatable)`);
-  console.log(`  --help                      Show this help text\n`);
+const DEFAULT_OUTPUT_FILE = "schema-drift-report.md";
+const DEFAULT_SEVERITY: SeverityLevel = "medium";
+
+function printHelp(): void {
+  console.log(`
+🔍 Schema Drift Radar
+
+Usage:
+  bun run agents/schema-drift-radar.ts [options]
+
+Options:
+  --project <path>            Path to the service or monorepo (default: cwd)
+  --schema-dump env=path      Register a schema dump for an environment (repeatable)
+  --orm <name>                Hint ORM/framework in use (repeatable)
+  --output <file>             Markdown file to write the drift report (default: ${DEFAULT_OUTPUT_FILE})
+  --generate-migrations       Ask the agent to draft SQL/ORM migration snippets
+  --no-dry-run                Allow the agent to stage file edits (still never run migrations)
+  --severity <low|medium|high>Focus attention on issues at or above this severity (default: ${DEFAULT_SEVERITY})
+  --ticket <id>               Link ticket/ADR identifiers for additional context (repeatable)
+  --help, -h                  Show this help text
+
+Examples:
+  bun run agents/schema-drift-radar.ts
+  bun run agents/schema-drift-radar.ts --project ./services/api
+  bun run agents/schema-drift-radar.ts --schema-dump prod=./prod-schema.sql --schema-dump staging=./staging-schema.sql
+  bun run agents/schema-drift-radar.ts --orm prisma --orm typeorm --severity high
+  bun run agents/schema-drift-radar.ts --generate-migrations --no-dry-run --output drift-report.md
+  `);
 }
 
-function parseArgsCustom(args: string[]): SchemaDriftRadarOptions {
-  const { positionals, values } = parseArgs({
-    args,
-    allowPositionals: true,
-    options: {
-      help: { type: 'boolean', short: 'h' },
-      project: { type: 'string' },
-      'schema-dump': { type: 'string', multiple: true },
-      orm: { type: 'string', multiple: true },
-      output: { type: 'string' },
-      'generate-migrations': { type: 'boolean' },
-      'no-dry-run': { type: 'boolean' },
-      severity: { type: 'string' },
-      ticket: { type: 'string', multiple: true },
-    },
-    strict: false,
-  });
+function parseOptions(): SchemaDriftRadarOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  const options: SchemaDriftRadarOptions = {
-    projectPath: (values.project as string | undefined) ?? process.cwd(),
-    schemaSources: [],
-    orms: (values.orm as string[] | undefined) ?? [],
-    outputFile: (values.output as string | undefined) ?? 'schema-drift-report.md',
-    generateMigrations: (values['generate-migrations'] as boolean | undefined) ?? false,
-    dryRun: !((values['no-dry-run'] as boolean | undefined) ?? false),
-    severity: 'medium',
-    ticketHints: (values.ticket as string[] | undefined) ?? [],
-    showHelp: (values.help as boolean | undefined) ?? false,
-    unknownArgs: [],
-  };
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawProject = values.project;
+  const rawSchemaDumps = values['schema-dump'];
+  const rawOrms = values.orm;
+  const rawOutput = values.output;
+  const rawSeverity = values.severity;
+  const rawTickets = values.ticket;
+  const generateMigrations = values['generate-migrations'] === true;
+  const dryRun = !(values['no-dry-run'] === true);
+
+  const projectPath = typeof rawProject === "string" && rawProject.length > 0
+    ? resolve(rawProject)
+    : process.cwd();
+
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
 
   // Parse schema-dump values which have env=path format
-  const schemaDumps = values['schema-dump'];
-  if (schemaDumps) {
-    const dumps = Array.isArray(schemaDumps) ? schemaDumps : [schemaDumps];
+  const schemaSources: SchemaSource[] = [];
+  const unknownArgs: string[] = [];
+
+  if (rawSchemaDumps) {
+    const dumps = Array.isArray(rawSchemaDumps) ? rawSchemaDumps : [rawSchemaDumps];
     for (const dump of dumps) {
       if (typeof dump !== 'string') continue;
       const equalsIndex = dump.indexOf('=');
       if (equalsIndex === -1) {
-        options.unknownArgs.push(`--schema-dump ${dump}`);
+        unknownArgs.push(`--schema-dump ${dump}`);
         continue;
       }
       const env = dump.slice(0, equalsIndex).trim();
       const path = dump.slice(equalsIndex + 1).trim();
       if (!env || !path) {
-        options.unknownArgs.push(`--schema-dump ${dump}`);
+        unknownArgs.push(`--schema-dump ${dump}`);
         continue;
       }
-      options.schemaSources.push({ env, path });
+      schemaSources.push({ env, path });
     }
   }
+
+  // Parse ORMs
+  const orms: string[] = rawOrms
+    ? (Array.isArray(rawOrms) ? rawOrms : [rawOrms]).filter((v): v is string => typeof v === "string")
+    : [];
+
+  // Parse tickets
+  const ticketHints: string[] = rawTickets
+    ? (Array.isArray(rawTickets) ? rawTickets : [rawTickets]).filter((v): v is string => typeof v === "string")
+    : [];
 
   // Validate severity
-  const severityValue = values.severity as string | undefined;
-  if (severityValue) {
-    if (severityValue === 'low' || severityValue === 'medium' || severityValue === 'high') {
-      options.severity = severityValue;
+  let severity: SeverityLevel = DEFAULT_SEVERITY;
+  if (typeof rawSeverity === "string" && rawSeverity.length > 0) {
+    if (rawSeverity === 'low' || rawSeverity === 'medium' || rawSeverity === 'high') {
+      severity = rawSeverity;
     } else {
-      options.unknownArgs.push(`--severity ${severityValue}`);
+      console.error(`❌ Error: Invalid severity level. Must be low, medium, or high`);
+      process.exit(1);
     }
   }
 
-  // Collect any unknown positional arguments
-  options.unknownArgs.push(...positionals);
+  if (unknownArgs.length > 0) {
+    console.warn('[warn]  Ignored malformed arguments:', unknownArgs.join(', '));
+  }
 
-  return options;
+  return {
+    projectPath,
+    schemaSources,
+    orms,
+    outputFile,
+    generateMigrations,
+    dryRun,
+    severity,
+    ticketHints,
+  };
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const options = parseArgsCustom(args);
-
-  if (options.showHelp) {
-    printUsage();
-    return;
-  }
-
-  if (options.unknownArgs.length > 0) {
-    console.warn('[warn]  Ignored unknown arguments:', options.unknownArgs.join(', '));
-  }
-
+function buildPrompt(options: SchemaDriftRadarOptions): string {
   const schemaSourceDescription =
     options.schemaSources.length > 0
       ? options.schemaSources
-          .map((source) => `    - ${source.env}: ${source.path}`)
+          .map((source: SchemaSource) => `    - ${source.env}: ${source.path}`)
           .join('\n')
       : '    - auto-detect dumps via Glob (*/schema.sql, dump/*.sql, prisma/migrations/*, etc.)';
 
@@ -159,23 +179,7 @@ async function main() {
     ? `${options.outputFile.replace(/\.md$/i, '') || 'schema-drift-report'}-patch.sql`
     : undefined;
 
-  console.log('[Schema Drift Radar]  Schema Drift Radar\n');
-  console.log('Configuration:');
-  console.log(`  - Project path: ${options.projectPath}`);
-  console.log(`  - Output report: ${options.outputFile}`);
-  console.log(`  - Dry run mode: ${options.dryRun ? 'ON (analysis only)' : 'OFF (writes allowed)'}`);
-  console.log(`  - Generate migrations: ${options.generateMigrations ? 'YES' : 'NO'}`);
-  console.log(`  - Severity focus: ${options.severity}`);
-  console.log(`  - ORM hints: ${ormDescription}`);
-  console.log(`  - Ticket references: ${ticketDescription}`);
-  console.log('  - Schema sources:');
-  console.log(schemaSourceDescription);
-  if (patchFileSuggestion) {
-    console.log(`  - Suggested patch file: ${patchFileSuggestion}`);
-  }
-  console.log();
-
-  const missionBrief = `You are Schema Drift Radar, a database observability agent.
+  return `You are Schema Drift Radar, a database observability agent.
 
 MANDATE
 -------
@@ -188,7 +192,8 @@ OPERATING MODES
 - Severity focus: ${options.severity}
 - Ticket anchors: ${ticketDescription}
 - Dry run: ${options.dryRun ? 'YES - never execute migration commands, only analyze and propose fixes.' : 'NO - you may stage file edits via Write/Edit, but never execute shell commands that mutate data.'}
-- Schema sources:\n${schemaSourceDescription}
+- Schema sources:
+${schemaSourceDescription}
 - Report file: ${options.outputFile}
 ${patchFileSuggestion ? `- Patch file target: ${patchFileSuggestion}` : ''}
 
@@ -241,45 +246,117 @@ TOOLS & EXECUTION GUIDANCE
 - Write to produce the report and optional patch file.
 - TodoWrite to surface immediate follow-up tasks, referencing ticket IDs when supplied.
 
-Please begin the drift reconnaissance now and keep output concise but actionable.`;
+Please begin the drift reconnaissance now and keep output concise but actionable.`.trim();
+}
 
-  const stream = query({
-    prompt: missionBrief,
-    options: {
-      cwd: options.projectPath,
-      allowedTools: ['Bash', 'Read', 'Write', 'Grep', 'Glob', 'TodoWrite'],
-      permissionMode: options.dryRun ? 'default' : 'acceptEdits',
-      maxThinkingTokens: 6000,
-      maxTurns: 24,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "project",
+    "schema-dump",
+    "orm",
+    "output",
+    "generate-migrations",
+    "no-dry-run",
+    "severity",
+    "ticket",
+    "help",
+    "h",
+  ] as const;
 
-  for await (const message of stream) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    }
-
-    if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n[done] Drift analysis session complete.');
-        console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Total cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Turns: ${message.num_turns}`);
-      } else {
-        console.error('\n[error] Schema Drift Radar did not finish successfully.');
-        console.error(`Subtype: ${message.subtype}`);
-        process.exitCode = 1;
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error running Schema Drift Radar:', error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+const schemaSourceDescription =
+  options.schemaSources.length > 0
+    ? options.schemaSources
+        .map((source: SchemaSource) => `    - ${source.env}: ${source.path}`)
+        .join('\n')
+    : '    - auto-detect dumps via Glob';
+
+const ormDescription = options.orms.length > 0 ? options.orms.join(', ') : 'auto-detect';
+const ticketDescription = options.ticketHints.length > 0 ? options.ticketHints.join(', ') : 'none';
+const patchFileSuggestion = options.generateMigrations
+  ? `${options.outputFile.replace(/\.md$/i, '') || 'schema-drift-report'}-patch.sql`
+  : undefined;
+
+console.log('🔍 Schema Drift Radar\n');
+console.log('Configuration:');
+console.log(`  - Project path: ${options.projectPath}`);
+console.log(`  - Output report: ${options.outputFile}`);
+console.log(`  - Dry run mode: ${options.dryRun ? 'ON (analysis only)' : 'OFF (writes allowed)'}`);
+console.log(`  - Generate migrations: ${options.generateMigrations ? 'YES' : 'NO'}`);
+console.log(`  - Severity focus: ${options.severity}`);
+console.log(`  - ORM hints: ${ormDescription}`);
+console.log(`  - Ticket references: ${ticketDescription}`);
+console.log('  - Schema sources:');
+console.log(schemaSourceDescription);
+if (patchFileSuggestion) {
+  console.log(`  - Suggested patch file: ${patchFileSuggestion}`);
+}
+console.log();
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "TodoWrite",
+  ...(options.dryRun ? [] : ["Edit"]),
+];
+
+// Change working directory if needed
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.dryRun ? "default" : "acceptEdits",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Schema drift analysis complete!\n");
+    console.log(`📄 Full report: ${options.outputFile}`);
+    if (options.generateMigrations) {
+      console.log("📝 Migration snippets included in report");
+      if (patchFileSuggestion) {
+        console.log(`   Patch file: ${patchFileSuggestion}`);
+      }
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the drift report");
+    console.log("2. Prioritize critical drift issues");
+    console.log("3. Apply recommended fixes or migrations");
+    console.log("4. Re-run analysis to verify");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+} finally {
+  // Restore original cwd
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+}

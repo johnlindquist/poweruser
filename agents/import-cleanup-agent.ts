@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Import Cleanup Agent
@@ -12,85 +12,91 @@
  * - Identifies circular dependencies that could cause runtime issues
  * - Generates a report showing total lines of code cleaned up and files modified
  * - Perfect for keeping codebases tidy and passing strict linting rules without manual effort
+ *
+ * Usage:
+ *   bun run agents/import-cleanup-agent.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Analyze current directory
+ *   bun run agents/import-cleanup-agent.ts
+ *
+ *   # Analyze specific project
+ *   bun run agents/import-cleanup-agent.ts /path/to/project
+ *
+ *   # Dry run (no changes)
+ *   bun run agents/import-cleanup-agent.ts --dry-run
+ *
+ *   # Analyze with custom report name
+ *   bun run agents/import-cleanup-agent.ts --report custom-report.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const DRY_RUN = process.argv.includes('--dry-run');
-const OUTPUT_FILE = 'IMPORT_CLEANUP_REPORT.md';
+interface ImportCleanupOptions {
+  projectPath: string;
+  dryRun: boolean;
+  reportFile: string;
+}
 
-async function main() {
-  console.log('🧹 Import Cleanup Agent');
-  console.log(`📁 Project: ${PROJECT_PATH}`);
-  if (DRY_RUN) {
-    console.log('🔍 Running in DRY RUN mode (no files will be modified)');
+const DEFAULT_REPORT_FILE = "IMPORT_CLEANUP_REPORT.md";
+
+function printHelp(): void {
+  console.log(`
+🧹 Import Cleanup Agent
+
+Usage:
+  bun run agents/import-cleanup-agent.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project (default: current directory)
+
+Options:
+  --dry-run               Analyze only, don't modify files
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/import-cleanup-agent.ts
+  bun run agents/import-cleanup-agent.ts /path/to/project
+  bun run agents/import-cleanup-agent.ts --dry-run
+  bun run agents/import-cleanup-agent.ts --report custom-report.md
+  `);
+}
+
+function parseOptions(): ImportCleanupOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
-  console.log();
 
-  const systemPrompt = `You are an Import Cleanup Agent that helps developers maintain clean and organized import statements.
+  const projectPath = positionals[0] ? resolve(positionals[0]) : process.cwd();
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
+  const rawReport = values.report;
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
 
-Your task is to:
-1. Find all TypeScript/JavaScript/Python files in the project:
-   - Use Glob to find all .ts, .tsx, .js, .jsx, .py files
-   - Exclude node_modules, dist, build, .next, out, and other build directories
-   - Exclude test files if specified
-   - Exclude vendor/third-party code
+  return {
+    projectPath,
+    dryRun,
+    reportFile,
+  };
+}
 
-2. Analyze imports in each file:
-   - Use Grep to quickly identify files with import statements
-   - Read each file to analyze import structure
-   - Identify unused imports by checking if imported names are used in the file
-   - Detect duplicate imports (same module imported multiple times)
-   - Find imports that can be consolidated
-   - Check for circular dependencies
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
 
-3. Detect import issues:
-   - Unused imports (imported but never referenced)
-   - Duplicate imports (same package/module imported multiple times)
-   - Unorganized imports (mixed external and internal imports)
-   - Non-alphabetical ordering within groups
-   - Inconsistent quote styles (mixing single and double quotes)
-   - Missing blank lines between import groups
-   - Mixing default and named imports from same module
-   - Type imports mixed with value imports (TypeScript)
+function buildPrompt(options: ImportCleanupOptions): string {
+  const { dryRun, reportFile } = options;
 
-4. Organize imports properly:
-   - Group 1: External package imports (from node_modules)
-   - Blank line
-   - Group 2: Internal absolute imports (from @/ or ~/)
-   - Blank line
-   - Group 3: Relative imports (from ./ or ../)
-   - Within each group: sort alphabetically by module name
-   - For TypeScript: separate type imports if using type-only imports
-
-5. Fix the imports:
-   - Remove unused imports completely
-   - Consolidate duplicate imports into single statements
-   - Reorder imports according to the organization rules
-   - Fix quote style inconsistencies (prefer single quotes unless project uses double)
-   - Add proper blank lines between groups
-   - Preserve any import side effects (imports without bindings)
-   ${DRY_RUN ? '- DO NOT USE Edit, MultiEdit, or Write tools to modify files (dry run mode)' : '- Use MultiEdit to apply all changes to each file efficiently'}
-
-6. Generate a cleanup report:
-   - Create a markdown report with all findings and changes
-   - Show statistics: files analyzed, files modified, imports removed, imports reorganized
-   - List all changes made to each file
-   - Estimate lines of code saved
-   - Provide recommendations for preventing future issues
-
-Use Glob to find files, Grep to locate import statements, Read to analyze file contents, ${DRY_RUN ? 'and Write to generate the report only' : 'MultiEdit to fix imports efficiently, and Write to generate the report'}.
-
-IMPORTANT:
-- Be careful not to break functional code - only remove imports that are truly unused
-- Preserve import side effects (imports with no bindings like "import './styles.css'")
-- Handle TypeScript type imports correctly (import type vs import)
-- Don't modify files in node_modules or build directories
-- Consider re-exports when checking for unused imports
-- Preserve comments on the same line as imports when possible`;
-
-  const prompt = `Analyze and clean up imports across this codebase.
+  return `Analyze and clean up imports across this codebase.
 
 Follow these steps:
 
@@ -117,25 +123,25 @@ Follow these steps:
    - **Style issues:** Mixed quotes, missing blank lines
    - **Circular dependencies:** If detected, flag as warning
 
-5. ${DRY_RUN ? 'Document but DO NOT make changes' : 'Fix the imports'}:
-   ${DRY_RUN ? '- List all changes that WOULD be made' : '- Use MultiEdit to apply all import fixes to each file'}
+5. ${dryRun ? 'Document but DO NOT make changes' : 'Fix the imports'}:
+   ${dryRun ? '- List all changes that WOULD be made' : '- Use MultiEdit to apply all import fixes to each file'}
    - Remove unused imports
    - Consolidate duplicate imports
    - Reorganize into proper groups with alphabetical sorting
    - Fix style inconsistencies
    - Add blank lines between groups
 
-6. Generate a detailed report saved as '${OUTPUT_FILE}':
+6. Generate a detailed report saved as '${reportFile}':
 
    # 🧹 Import Cleanup Report
 
-   > Analysis performed on [date]${DRY_RUN ? ' (DRY RUN MODE - No changes made)' : ''}
+   > Analysis performed on [date]${dryRun ? ' (DRY RUN MODE - No changes made)' : ''}
 
    ## 📊 Summary
 
    - **Files analyzed:** X files
    - **Files with imports:** Y files
-   ${DRY_RUN ? '- **Files that would be modified:** Z files' : '- **Files modified:** Z files'}
+   ${dryRun ? '- **Files that would be modified:** Z files' : '- **Files modified:** Z files'}
    - **Unused imports removed:** N imports
    - **Duplicate imports consolidated:** M imports
    - **Files reorganized:** K files
@@ -163,13 +169,13 @@ Follow these steps:
 
    ## 📝 Detailed Changes
 
-   ${DRY_RUN ? '### Changes that WOULD be made:' : '### Changes made:'}
+   ${dryRun ? '### Changes that WOULD be made:' : '### Changes made:'}
 
    #### \`src/components/Button.tsx\`
-   ${DRY_RUN ? '**Would remove:**' : '**Removed:**'}
+   ${dryRun ? '**Would remove:**' : '**Removed:**'}
    - \`import { unused } from 'some-package'\` (never used)
 
-   ${DRY_RUN ? '**Would consolidate:**' : '**Consolidated:**'}
+   ${dryRun ? '**Would consolidate:**' : '**Consolidated:**'}
    \`\`\`typescript
    // Before
    import { foo } from 'package';
@@ -179,7 +185,7 @@ Follow these steps:
    import { bar, foo } from 'package';
    \`\`\`
 
-   ${DRY_RUN ? '**Would reorganize:**' : '**Reorganized:**'}
+   ${dryRun ? '**Would reorganize:**' : '**Reorganized:**'}
    \`\`\`typescript
    // Before
    import { Component } from './Component';
@@ -249,64 +255,141 @@ Follow these steps:
 
    ## 🚀 Next Steps
 
-   ${DRY_RUN ? '1. Review this report carefully\n   2. Run without --dry-run flag to apply changes: \`bun agents/import-cleanup-agent.ts\`\n   3. Test your application thoroughly\n   4. Commit the changes' : '1. Run your test suite to ensure nothing broke\n   2. Review the git diff to verify changes\n   3. Enable ESLint rules to maintain clean imports\n   4. Consider setting up automated import organization'}
+   ${dryRun ? '1. Review this report carefully\n   2. Run without --dry-run flag to apply changes: \`bun agents/import-cleanup-agent.ts\`\n   3. Test your application thoroughly\n   4. Commit the changes' : '1. Run your test suite to ensure nothing broke\n   2. Review the git diff to verify changes\n   3. Enable ESLint rules to maintain clean imports\n   4. Consider setting up automated import organization'}
 
    ---
 
    **Tip:** Run this agent periodically or as part of your CI pipeline to maintain clean imports!
 
-Start by discovering all files, then analyze imports systematically, ${DRY_RUN ? 'document the issues' : 'fix them'}, and generate the comprehensive cleanup report.`;
+Start by discovering all files, then analyze imports systematically, ${dryRun ? 'document the issues' : 'fix them'}, and generate the comprehensive cleanup report.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: DRY_RUN
-          ? ['Read', 'Glob', 'Grep', 'Write']
-          : ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write'],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function buildSystemPrompt(options: ImportCleanupOptions): string {
+  const { dryRun } = options;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Import cleanup complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
+  return `You are an Import Cleanup Agent that helps developers maintain clean and organized import statements.
 
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
+Your task is to:
+1. Find all TypeScript/JavaScript/Python files in the project:
+   - Use Glob to find all .ts, .tsx, .js, .jsx, .py files
+   - Exclude node_modules, dist, build, .next, out, and other build directories
+   - Exclude test files if specified
+   - Exclude vendor/third-party code
 
-          console.log(`\n📄 Cleanup report saved to: ${OUTPUT_FILE}`);
-          if (DRY_RUN) {
-            console.log('🔍 This was a dry run - no files were modified');
-            console.log('💡 Run without --dry-run to apply changes');
-          } else {
-            console.log('✅ All import issues have been fixed!');
-            console.log('🧪 Remember to run your tests to verify nothing broke');
-          }
-        } else {
-          console.error('\n❌ Cleanup failed:', message.subtype);
-        }
-      }
+2. Analyze imports in each file:
+   - Use Grep to quickly identify files with import statements
+   - Read each file to analyze import structure
+   - Identify unused imports by checking if imported names are used in the file
+   - Detect duplicate imports (same module imported multiple times)
+   - Find imports that can be consolidated
+   - Check for circular dependencies
+
+3. Detect import issues:
+   - Unused imports (imported but never referenced)
+   - Duplicate imports (same package/module imported multiple times)
+   - Unorganized imports (mixed external and internal imports)
+   - Non-alphabetical ordering within groups
+   - Inconsistent quote styles (mixing single and double quotes)
+   - Missing blank lines between import groups
+   - Mixing default and named imports from same module
+   - Type imports mixed with value imports (TypeScript)
+
+4. Organize imports properly:
+   - Group 1: External package imports (from node_modules)
+   - Blank line
+   - Group 2: Internal absolute imports (from @/ or ~/)
+   - Blank line
+   - Group 3: Relative imports (from ./ or ../)
+   - Within each group: sort alphabetically by module name
+   - For TypeScript: separate type imports if using type-only imports
+
+5. Fix the imports:
+   - Remove unused imports completely
+   - Consolidate duplicate imports into single statements
+   - Reorder imports according to the organization rules
+   - Fix quote style inconsistencies (prefer single quotes unless project uses double)
+   - Add proper blank lines between groups
+   - Preserve any import side effects (imports without bindings)
+   ${dryRun ? '- DO NOT USE Edit, MultiEdit, or Write tools to modify files (dry run mode)' : '- Use MultiEdit to apply all changes to each file efficiently'}
+
+6. Generate a cleanup report:
+   - Create a markdown report with all findings and changes
+   - Show statistics: files analyzed, files modified, imports removed, imports reorganized
+   - List all changes made to each file
+   - Estimate lines of code saved
+   - Provide recommendations for preventing future issues
+
+Use Glob to find files, Grep to locate import statements, Read to analyze file contents, ${dryRun ? 'and Write to generate the report only' : 'MultiEdit to fix imports efficiently, and Write to generate the report'}.
+
+IMPORTANT:
+- Be careful not to break functional code - only remove imports that are truly unused
+- Preserve import side effects (imports with no bindings like "import './styles.css'")
+- Handle TypeScript type imports correctly (import type vs import)
+- Don't modify files in node_modules or build directories
+- Consider re-exports when checking for unused imports
+- Preserve comments on the same line as imports when possible`;
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["dry-run", "dryRun", "report", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running Import Cleanup Agent:', error);
-    process.exit(1);
   }
 }
 
-main();
+console.log("🧹 Import Cleanup Agent\n");
+console.log(`📁 Project: ${options.projectPath}`);
+if (options.dryRun) {
+  console.log("🔍 Running in DRY RUN mode (no files will be modified)");
+}
+console.log(`📄 Report: ${options.reportFile}`);
+console.log("");
+
+// Change to project directory
+process.chdir(options.projectPath);
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Write",
+  "TodoWrite",
+  ...(options.dryRun ? [] : ["Edit", "MultiEdit"]),
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Import cleanup complete!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    if (options.dryRun) {
+      console.log("🔍 This was a dry run - no files were modified");
+      console.log("💡 Run without --dry-run to apply changes");
+    } else {
+      console.log("✅ All import issues have been fixed!");
+      console.log("🧪 Remember to run your tests to verify nothing broke");
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

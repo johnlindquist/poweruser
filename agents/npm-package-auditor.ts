@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * NPM Package Auditor Agent
@@ -22,36 +22,95 @@
  *   --help                  View detailed help
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 const SEVERITY_LEVELS = ['low', 'moderate', 'high', 'critical'] as const;
 type SeverityLevel = (typeof SEVERITY_LEVELS)[number];
 
-type NpmPackageAuditOptions = {
+interface NpmPackageAuditOptions {
   projectPath: string;
-  includeDev?: boolean;
-  severity?: SeverityLevel;
-  planFixes?: boolean;
-  generateSbom?: boolean;
-};
+  includeDev: boolean;
+  severity: SeverityLevel;
+  planFixes: boolean;
+  generateSbom: boolean;
+}
 
-async function runNpmPackageAudit(options: NpmPackageAuditOptions) {
-  const {
+const DEFAULT_SEVERITY: SeverityLevel = 'moderate';
+
+function printHelp(): void {
+  console.log(`
+🧮 NPM Package Auditor
+
+Usage:
+  bun run agents/npm-package-auditor.ts [options]
+
+Options:
+  --project <path>        Path to project directory (default: current directory)
+  --include-dev           Include devDependencies in the risk analysis
+  --severity <level>      Minimum severity to flag (low|moderate|high|critical, default: ${DEFAULT_SEVERITY})
+  --plan-fixes            Explore safe remediation commands (dry-run only)
+  --sbom                  Generate an SBOM appendix from npm ls output
+  --help, -h              Show this help
+
+Examples:
+  # Audit the current project with default settings
+  bun run agents/npm-package-auditor.ts
+
+  # Include devDependencies and explore remediation commands
+  bun run agents/npm-package-auditor.ts --include-dev --plan-fixes
+
+  # Only surface high severity issues for another repo
+  bun run agents/npm-package-auditor.ts --project ../api --severity high
+
+  # Produce SBOM appendix alongside the report
+  bun run agents/npm-package-auditor.ts --sbom
+  `);
+}
+
+function parseOptions(): NpmPackageAuditOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawProject = values.project;
+  const includeDev = values['include-dev'] === true || values.includeDev === true;
+  const planFixes = values['plan-fixes'] === true || values.planFixes === true;
+  const generateSbom = values.sbom === true;
+  const rawSeverity = values.severity;
+
+  const projectPath = typeof rawProject === "string" && rawProject.length > 0
+    ? resolve(rawProject)
+    : process.cwd();
+
+  let severity: SeverityLevel = DEFAULT_SEVERITY;
+  if (typeof rawSeverity === "string" && rawSeverity.length > 0) {
+    const level = rawSeverity.toLowerCase();
+    if (SEVERITY_LEVELS.includes(level as SeverityLevel)) {
+      severity = level as SeverityLevel;
+    } else {
+      console.warn(`⚠️  Unknown severity "${level}". Falling back to "${DEFAULT_SEVERITY}".`);
+    }
+  }
+
+  return {
     projectPath,
-    includeDev = false,
-    severity = 'moderate',
-    planFixes = false,
-    generateSbom = false,
-  } = options;
+    includeDev,
+    severity,
+    planFixes,
+    generateSbom,
+  };
+}
 
-  console.log('🧮 NPM Package Auditor booting up...\n');
-  console.log(`📂 Project: ${projectPath}`);
-  console.log(`🧪 Include devDependencies: ${includeDev}`);
-  console.log(`🚨 Minimum severity reported: ${severity}`);
-  console.log(`🛠️  Explore remediation playbook: ${planFixes}`);
-  console.log(`📦 SBOM appendix: ${generateSbom}\n`);
+function buildPrompt(options: NpmPackageAuditOptions): string {
+  const { includeDev, severity, planFixes, generateSbom } = options;
 
-  const prompt = `You are the "NPM Package Auditor". Focus exclusively on npm and Node.js dependency health for the project at: ${projectPath}
+  return `You are the "NPM Package Auditor". Focus exclusively on npm and Node.js dependency health for this project.
 
 Core expectations:
 1. Validate project readiness
@@ -88,194 +147,88 @@ Operating constraints:
 - Emphasize CI/CD guardrails if critical issues appear
 ${generateSbom ? '\nSBOM requirement: export npm tree to JSON and include digest stats (package count, depth, top vendors).' : ''}\n`; // eslint-disable-line max-len
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: projectPath,
-      allowedTools: [
-        'Bash',
-        'BashOutput',
-        'Read',
-        'Write',
-        'Edit',
-        'Glob',
-        'Grep',
-        'WebFetch',
-        'WebSearch',
-      ],
-      agents: {
-        'npm-vulnerability-analyst': {
-          description: 'Specialist focusing on npm audit results and CVE interpretation',
-          tools: ['Bash', 'Read', 'WebFetch', 'WebSearch'],
-          prompt: 'Analyze npm audit JSON output, cross-reference CVEs, and explain impact on the codebase succinctly.',
-          model: 'sonnet',
-        },
-        'version-radar': {
-          description: 'Tracks npm outdated results and evaluates semver risk',
-          tools: ['Bash', 'Read', 'WebFetch'],
-          prompt: 'Compare installed versions with latest releases and flag risky upgrades. Capture changelog notes when possible.',
-          model: 'haiku',
-        },
-        'supply-chain-sleuth': {
-          description: 'Surfaces maintainer and ecosystem red flags for npm packages',
-          tools: ['WebFetch', 'WebSearch'],
-          prompt: 'Investigate suspicious npm packages for abandonment, typosquatting, or maintainer churn. Summarize only high-signal findings.',
-          model: 'haiku',
-        },
-      },
-      permissionMode: 'default',
-      maxTurns: 28,
-      model: 'claude-sonnet-4-5-20250929',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any)?.command ?? '';
-                    if (command.includes('npm audit')) {
-                      console.log('🔎 Running npm audit...');
-                    }
-                    if (command.includes('npm outdated')) {
-                      console.log('🗒️  Checking outdated packages...');
-                    }
-                    if (command.includes('npm ls')) {
-                      console.log('🌳 Mapping dependency tree...');
-                    }
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n📘 NPM Package Auditor session ended.');
-                console.log('➡️  Review npm-audit-report.md for the full findings.');
-                console.log('➡️  Prioritize remediation by severity and test coverage.');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+}
 
-  let streamHadAssistantOutput = false;
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["project", "include-dev", "includeDev", "severity", "plan-fixes", "planFixes", "sbom", "help", "h"] as const;
 
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          streamHadAssistantOutput = true;
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ npm package audit complete!');
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔢 Turns: ${message.num_turns}`);
-      } else {
-        console.error('\n❌ Audit failed:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  }
-
-  if (!streamHadAssistantOutput) {
-    console.warn('\n⚠️  Agent finished without streaming commentary. Check logs for issues.');
   }
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-
-  if (args.includes('--help')) {
-    console.log(`
-NPM Package Auditor Agent
-
-Usage:
-  bun run agents/npm-package-auditor.ts [options]
-
-Options:
-  --project <path>        Path to project directory (default: current directory)
-  --include-dev           Include devDependencies in the risk analysis
-  --severity <level>      Minimum severity to flag (low|moderate|high|critical)
-  --plan-fixes            Explore safe remediation commands (dry-run only)
-  --sbom                  Generate an SBOM appendix from npm ls output
-  --help                  Show this help message
-
-Examples:
-  # Audit the current project with default settings
-  bun run agents/npm-package-auditor.ts
-
-  # Include devDependencies and explore remediation commands
-  bun run agents/npm-package-auditor.ts --include-dev --plan-fixes
-
-  # Only surface high severity issues for another repo
-  bun run agents/npm-package-auditor.ts --project ../api --severity high
-
-  # Produce SBOM appendix alongside the report
-  bun run agents/npm-package-auditor.ts --sbom
-    `);
-    process.exit(0);
-  }
-
-  let projectPath = process.cwd();
-  let includeDev = false;
-  let planFixes = false;
-  let severity: SeverityLevel = 'moderate';
-  let generateSbom = false;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '--project':
-        projectPath = args[++i] ?? projectPath;
-        break;
-      case '--include-dev':
-        includeDev = true;
-        break;
-      case '--plan-fixes':
-        planFixes = true;
-        break;
-      case '--sbom':
-        generateSbom = true;
-        break;
-      case '--severity':
-        {
-          const level = (args[++i] ?? '').toLowerCase();
-          if (SEVERITY_LEVELS.includes(level as SeverityLevel)) {
-            severity = level as SeverityLevel;
-          } else {
-            console.warn(`⚠️  Unknown severity "${level}". Falling back to "${severity}".`);
-          }
-        }
-        break;
-      default:
-        if (arg && arg.startsWith('--')) {
-          console.warn(`⚠️  Ignoring unknown option: ${arg}`);
-        }
-        break;
-    }
-  }
-
-  runNpmPackageAudit({
-    projectPath,
-    includeDev,
-    severity,
-    planFixes,
-    generateSbom,
-  }).catch((error) => {
-    console.error('❌ Fatal error during npm package audit:', error);
-    process.exit(1);
-  });
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
 }
 
-export { runNpmPackageAudit };
+console.log('🧮 NPM Package Auditor\n');
+console.log(`📂 Project: ${options.projectPath}`);
+console.log(`🧪 Include devDependencies: ${options.includeDev}`);
+console.log(`🚨 Minimum severity reported: ${options.severity}`);
+console.log(`🛠️  Explore remediation playbook: ${options.planFixes}`);
+console.log(`📦 SBOM appendix: ${options.generateSbom}\n`);
+
+// Change to project directory
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  'Bash',
+  'BashOutput',
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'WebFetch',
+  'WebSearch',
+  'TodoWrite',
+];
+
+// Note: Agent definitions would typically be passed via MCP config or other mechanism
+// For now, we'll rely on the Task tool for sub-agent delegation
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "default",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original working directory
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+
+  if (exitCode === 0) {
+    console.log('\n✨ NPM package audit complete!\n');
+    console.log('📄 Full report: npm-audit-report.md');
+    console.log('\nNext steps:');
+    console.log('1. Review the audit report');
+    console.log('2. Prioritize remediation by severity');
+    console.log('3. Test coverage before applying fixes');
+    console.log('4. Consider CI/CD guardrails for critical issues');
+  }
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original working directory on error
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
+}

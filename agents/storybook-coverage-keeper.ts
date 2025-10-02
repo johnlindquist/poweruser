@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Storybook Coverage Keeper Agent
@@ -12,10 +12,30 @@
  * - Offers ready-to-commit story stubs that follow the project's coding style
  * - Integrates with CI by exporting a markdown report and optional JSON summary for dashboards
  * - Perfect for teams who need confidence that every reusable component has a quality Storybook presence
+ *
+ * Usage:
+ *   bun run agents/storybook-coverage-keeper.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Audit current directory
+ *   bun run agents/storybook-coverage-keeper.ts
+ *
+ *   # Audit specific project
+ *   bun run agents/storybook-coverage-keeper.ts ./my-ui-library
+ *
+ *   # Auto-generate missing story stubs
+ *   bun run agents/storybook-coverage-keeper.ts --auto-stub
+ *
+ *   # Focus on specific component
+ *   bun run agents/storybook-coverage-keeper.ts --component Button
+ *
+ *   # Custom report file
+ *   bun run agents/storybook-coverage-keeper.ts --report coverage.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface StorybookCoverageOptions {
   projectPath: string;
@@ -27,62 +47,84 @@ interface StorybookCoverageOptions {
   includeMdx: boolean;
 }
 
-function getOptions(): StorybookCoverageOptions {
-  const { positionals, values } = parseArgs({
-    args: Bun.argv.slice(2),
-    allowPositionals: true,
-    options: {
-      'stories-dir': { type: 'string' },
-      'component-globs': { type: 'string' },
-      'report': { type: 'string' },
-      'component': { type: 'string' },
-      'auto-stub': { type: 'boolean' },
-      'no-mdx': { type: 'boolean' },
-    },
-  });
+const DEFAULT_REPORT_FILE = "storybook-coverage-report.md";
+const DEFAULT_STORY_DIRS = ["src", "apps"];
+const DEFAULT_COMPONENT_GLOBS = [
+  "src/components/**/*.{tsx,ts,jsx,js,vue,svelte}",
+  "src/ui/**/*.{tsx,ts,jsx,js,vue,svelte}",
+];
 
-  const projectPath = positionals[0] || process.cwd();
-  const storyDirValue = values['stories-dir'] as string | undefined;
-  const componentGlobValue = values['component-globs'] as string | undefined;
-  const reportValue = values['report'] as string | undefined;
-  const focusComponent = values['component'] as string | undefined;
+function printHelp(): void {
+  console.log(`
+📚 Storybook Coverage Keeper
+
+Usage:
+  bun run agents/storybook-coverage-keeper.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project root (default: current directory)
+
+Options:
+  --stories-dir <dirs>    Comma-separated story directories (default: ${DEFAULT_STORY_DIRS.join(", ")})
+  --component-globs <globs> Comma-separated component patterns (default: src/components/**/*.{tsx,jsx,...})
+  --report <file>         Output report file (default: ${DEFAULT_REPORT_FILE})
+  --component <name>      Focus on specific component
+  --auto-stub             Auto-generate missing story stubs
+  --no-mdx                Exclude MDX stories from analysis
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/storybook-coverage-keeper.ts
+  bun run agents/storybook-coverage-keeper.ts ./my-ui-library
+  bun run agents/storybook-coverage-keeper.ts --auto-stub
+  bun run agents/storybook-coverage-keeper.ts --component Button --report button-stories.md
+  `);
+}
+
+function parseOptions(): StorybookCoverageOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawProjectPath = positionals[0];
+  const projectPath = rawProjectPath ? resolve(rawProjectPath) : process.cwd();
+
+  const storyDirValue = values["stories-dir"];
+  const componentGlobValue = values["component-globs"];
+  const reportValue = values.report;
+  const focusComponent = values.component;
+  const autoStub = values["auto-stub"] === true;
+  const noMdx = values["no-mdx"] === true;
+
+  const storyDirs = typeof storyDirValue === "string" && storyDirValue.length > 0
+    ? storyDirValue.split(",").map((v) => v.trim()).filter(Boolean)
+    : DEFAULT_STORY_DIRS;
+
+  const componentGlobs = typeof componentGlobValue === "string" && componentGlobValue.length > 0
+    ? componentGlobValue.split(",").map((v) => v.trim()).filter(Boolean)
+    : DEFAULT_COMPONENT_GLOBS;
+
+  const reportFile = typeof reportValue === "string" && reportValue.length > 0
+    ? reportValue
+    : DEFAULT_REPORT_FILE;
 
   return {
     projectPath,
-    storyDirs: storyDirValue
-      ? storyDirValue.split(',').map((value) => value.trim()).filter(Boolean)
-      : ['src', 'apps'],
-    componentGlobs: componentGlobValue
-      ? componentGlobValue.split(',').map((value) => value.trim()).filter(Boolean)
-      : [
-          'src/components/**/*.{tsx,ts,jsx,js,vue,svelte}',
-          'src/ui/**/*.{tsx,ts,jsx,js,vue,svelte}',
-        ],
-    reportFile: reportValue || 'storybook-coverage-report.md',
-    autoStub: values['auto-stub'] === true,
-    focusComponent,
-    includeMdx: values['no-mdx'] !== true,
+    storyDirs,
+    componentGlobs,
+    reportFile,
+    autoStub,
+    focusComponent: typeof focusComponent === "string" && focusComponent.length > 0 ? focusComponent : undefined,
+    includeMdx: !noMdx,
   };
 }
 
-async function main() {
-  const options = getOptions();
-
-  console.log('📚 Storybook Coverage Keeper');
-  console.log(`📁 Project: ${options.projectPath}`);
-  console.log(`📄 Report: ${options.reportFile}`);
-  console.log(`📂 Story directories: ${options.storyDirs.join(', ')}`);
-  console.log(`🎯 Component globs: ${options.componentGlobs.join(', ')}`);
-  if (options.focusComponent) {
-    console.log(`🔍 Focus component: ${options.focusComponent}`);
-  }
-  console.log(`🧩 Include MDX stories: ${options.includeMdx ? 'Yes' : 'No'}`);
-  console.log(`🛠️  Auto-stub missing stories: ${options.autoStub ? 'Enabled' : 'Disabled'}`);
-  console.log('');
-
-  const systemPrompt = `You are the Storybook Coverage Keeper, an expert agent that audits component libraries to ensure Storybook completeness and quality.`;
-
-  const prompt = `Project root: ${options.projectPath}
+function buildPrompt(options: StorybookCoverageOptions): string {
+  return `Project root: ${options.projectPath}
 Story directories to inspect: ${options.storyDirs.join(', ') || '(auto-detect)'}
 Component glob patterns: ${options.componentGlobs.join(', ')}
 Target component: ${options.focusComponent ?? 'All components'}
@@ -150,60 +192,95 @@ Deliverables:
 - Markdown report written to ${options.reportFile}
 - If auto-stub enabled, create new story files and summarize them in the report
 - Celebrate completion with coverage metrics
-`;
+`.trim();
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: options.projectPath,
-        systemPrompt,
-        allowedTools: [
-          'Glob',
-          'Grep',
-          'Read',
-          'Write',
-          'Edit',
-          'MultiEdit'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "stories-dir",
+    "component-globs",
+    "report",
+    "component",
+    "auto-stub",
+    "no-mdx",
+    "help",
+    "h",
+  ] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Storybook coverage analysis complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Report saved to: ${options.reportFile}`);
-          if (options.autoStub) {
-            console.log('🪄 Story stubs generated for missing coverage. Review them before committing.');
-          } else {
-            console.log('💡 Run with --auto-stub to scaffold missing stories automatically.');
-          }
-        } else {
-          console.error('\n❌ Storybook coverage analysis failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running Storybook Coverage Keeper:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("📚 Storybook Coverage Keeper\n");
+console.log(`📁 Project: ${options.projectPath}`);
+console.log(`📄 Report: ${options.reportFile}`);
+console.log(`📂 Story directories: ${options.storyDirs.join(", ")}`);
+console.log(`🎯 Component globs: ${options.componentGlobs.join(", ")}`);
+if (options.focusComponent) {
+  console.log(`🔍 Focus component: ${options.focusComponent}`);
+}
+console.log(`🧩 Include MDX stories: ${options.includeMdx ? "Yes" : "No"}`);
+console.log(`🛠️  Auto-stub missing stories: ${options.autoStub ? "Enabled" : "Disabled"}`);
+console.log("");
+
+const systemPrompt = `You are the Storybook Coverage Keeper, an expert agent that audits component libraries to ensure Storybook completeness and quality.`;
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Write",
+  ...(options.autoStub ? ["Edit", "MultiEdit"] : []),
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoStub ? "acceptEdits" : "bypassPermissions",
+  "append-system-prompt": systemPrompt,
+  ...(options.autoStub ? { "dangerously-skip-permissions": true } : {}),
+};
+
+// Change to project directory before running
+const originalCwd = process.cwd();
+process.chdir(options.projectPath);
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Storybook coverage analysis complete!\n");
+    console.log(`📄 Report saved to: ${options.reportFile}`);
+    if (options.autoStub) {
+      console.log("🪄 Story stubs generated for missing coverage. Review them before committing.");
+    } else {
+      console.log("💡 Run with --auto-stub to scaffold missing stories automatically.");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the coverage report");
+    console.log("2. Check missing component stories");
+    console.log("3. Verify generated story stubs (if auto-stub enabled)");
+    console.log("4. Add interaction tests and accessibility annotations");
+  }
+  process.chdir(originalCwd);
+  process.exit(exitCode);
+} catch (error) {
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

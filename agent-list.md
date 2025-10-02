@@ -1,0 +1,113 @@
+# Agent Directory
+
+This file provides a quick summary of all available agents in the `agents/` directory.
+
+- **`accessibility-audit-healer.ts`**: Audits and suggests fixes for web accessibility issues using Chrome DevTools.
+- **`agent-architect.ts`**: A meta-agent that scaffolds new Claude agents based on a brief.
+- **`agent-lib-migrator.ts`**: Migrates existing agents to use shared library patterns.
+- **`api-contract-validator.ts`**: Prevents breaking API changes by validating contracts against git history.
+- **`api-documentation-sync-checker.ts`**: Keeps API documentation in sync with the codebase.
+- **`api-response-type-generator.ts`**: Generates TypeScript types from live API responses.
+- **`backlog-ready-check-curator.ts`**: Verifies the quality of backlog tickets and highlights risks.
+- **`breaking-change-detector.ts`**: Scans git changes to identify potential breaking changes for consumers.
+- **`career-momentum-builder.ts`**: Helps developers accelerate their careers by analyzing skills and suggesting projects.
+- **`career-momentum-visualizer.ts`**: Analyzes git history to create a visual story of developer growth.
+- **`challenge-my-thinking.ts`**: Explores ideas and features through deep questioning before implementation.
+- **`changelog-automator.ts`**: Generates user-friendly changelogs from git history.
+- **`chrome-animation-profiler.ts`**: Profiles and analyzes web page animations using Chrome DevTools.
+- **`chrome-api-endpoint-tester.ts`**: Tests all API endpoints called by a web page.
+- **`chrome-auto-translator.ts`**: Automatically translates web page content and checks for layout issues.
+- **`chrome-batch-url-processor.ts`**: Processes a list of URLs for batch operations like screenshots or scraping.
+- **`chrome-bundle-analyzer.ts`**: Analyzes JavaScript bundles to identify optimization opportunities.
+- **`chrome-cdn-optimizer.ts`**: Analyzes CDN usage and suggests optimizations.
+- **`chrome-click-path-recorder.ts`**: Records user click paths and generates reports.
+- **`chrome-console-error-hunter.ts`**: Catches JavaScript errors and warnings on web pages.
+- **`chrome-content-change-monitor.ts`**: Monitors web pages for content changes.
+- **`chrome-cookie-compliance-checker.ts`**: Audits cookie usage for GDPR/CCPA compliance.
+- **`chrome-data-scraper.ts`**: Scrapes data from web pages based on a natural language prompt.
+- **`chrome-extension-recreation-agent.ts`**: Reverse-engineers a Chrome extension and creates a rebuild guide.
+- **`chrome-font-performance-analyzer.ts`**: Analyzes web font loading and performance.
+- **`chrome-form-filler-bot.ts`**: Automatically fills out web forms with test data.
+- **`chrome-lighthouse-competitor.ts`**: Compares Lighthouse scores between a site and its competitors.
+- **`chrome-login-session-manager.ts`**: Manages login sessions and saves cookies for automated testing.
+- **`chrome-memory-leak-detector.ts`**: Monitors web pages for memory leaks.
+- **`chrome-mobile-responsive-checker.ts`**: Tests mobile responsiveness across different breakpoints.
+- **`chrome-multi-page-pdf-generator.ts`**: Generates a single PDF from multiple web pages.
+- **`chrome-page-speed-optimizer.ts`**: Analyzes page speed and generates an optimization plan.
+- **`chrome-perf-agent.ts`**: A general-purpose Chrome performance analysis agent.
+- **`chrome-prefetch-preload-auditor.ts`**: Audits `prefetch` and `preload` resource hints.
+- **`chrome-screenshot-gallery-generator.ts`**: Generates a gallery of screenshots from a list of URLs.
+- **`chrome-security-header-auditor.ts`**: Audits security headers of a web page.
+- **`chrome-seo-analyzer.ts`**: Analyzes on-page SEO and provides recommendations.
+- **`chrome-third-party-bloat-analyzer.ts`**: Analyzes the impact of third-party scripts on performance.
+- **`chrome-user-flow-recorder.ts`**: Records user flows and generates test scripts (Playwright/Cypress).
+- **`chrome-visual-regression-tester.ts`**: Performs visual regression testing against baseline images.
+- **`chrome-web-vitals-tracker.ts`**: Tracks Core Web Vitals over multiple runs to check for instability.
+- **`ci-failure-explainer.ts`**: Triages and explains CI pipeline failures.
+- **`claude-md-updater.ts`**: Keeps `CLAUDE.md` documentation up-to-date with project changes.
+- **`cli-utility-reconstructor.ts`**: Reverse-engineers CLI utilities and creates a rebuild plan.
+- **`code-review-automator.ts`**: Automates code reviews by checking for common issues.
+- **`code-storyteller.ts`**: Generates narrative documentation about a codebase.
+- **`codebase-time-machine.ts`**: Analyzes the evolution of a file over its git history.
+- **`config-todo-sweeper.ts`**: Finds and removes obsolete TODO comments from configuration files.
+- **`console-log-stripper.ts`**: Removes `console.log` statements from a codebase.
+- **`dead-code-eliminator.ts`**: Finds and removes unused code from a project.
+- **`dependency-health-monitor.ts`**: Scans dependencies for vulnerabilities, outdated packages, and license issues.
+- **`dependency-update-guardian.ts`**: Manages dependency updates safely by checking for breaking changes.
+- **`design-system-snapshotter.ts`**: Audits design system assets and creates a rebuild plan.
+- **`dream-feature-mapper.ts`**: Transforms feature ideas into actionable implementation roadmaps.
+- **`duplicate-code-detector.ts`**: Finds duplicate or near-duplicate code blocks.
+- **`electron-app-decomposer.ts`**: Reverse-engineers an Electron app and creates a rebuild playbook.
+- **`env-validator.ts`**: Validates `.env` files against an example file and codebase usage.
+- **`environment-config-auditor.ts`**: Audits environment configurations for security and consistency.
+- **`error-log-detective.ts`**: Analyzes error logs to identify patterns and suggest fixes.
+- **`error-message-explainer.ts`**: Translates cryptic error messages into actionable fixes.
+- **`flaky-test-fixer.ts`**: Identifies and suggests fixes for flaky tests.
+- **`form-flow-optimizer.ts`**: Optimizes multi-step forms by analyzing user friction.
+- **`git-branch-janitor.ts`**: Cleans up stale local and remote git branches.
+- **`git-history-storyteller.ts`**: Generates narrative documentation from git history.
+- **`helpful-tweet-batch-generator.ts`**: Generates helpful tweets in a specific voice from project context.
+- **`import-cleanup-agent.ts`**: Cleans up and organizes import statements.
+- **`incident-postmortem-composer.ts`**: Creates blameless incident postmortems from fragmented evidence.
+- **`integration-data-seed-curator.ts`**: Generates production-representative data seed kits.
+- **`interview-prep-autopilot.ts`**: Transforms a GitHub profile into personalized interview prep materials.
+- **`learning-path-generator.ts`**: Creates personalized learning roadmaps based on a codebase.
+- **`license-compliance-scanner.ts`**: Scans dependencies for license compliance issues.
+- **`link-rot-detector.ts`**: Finds broken links and dead resources on a website.
+- **`localhost-port-manager.ts`**: Manages development ports to avoid "port already in use" errors.
+- **`meeting-cliff-notes-composer.ts`**: Distills engineering meetings into high-signal briefings.
+- **`merge-conflict-resolver.ts`**: Helps resolve git merge conflicts.
+- **`migration-assistant.ts`**: Assists with migrating codebases between frameworks or versions.
+- **`multi-agent-orchestrator.ts`**: Manages multiple specialized sub-agents to complete complex tasks.
+- **`npm-package-auditor.ts`**: Audits npm dependencies for vulnerabilities and other issues.
+- **`oncall-pager-primer.ts`**: Assembles information for incoming on-call engineers.
+- **`open-source-contribution-matchmaker.ts`**: Connects developer skills with open source contribution opportunities.
+- **`open-source-launch-pad.ts`**: Transforms a side project into a professional open source project.
+- **`open-source-mentor.ts`**: Helps developers contribute to major open source projects.
+- **`output-style-builder.ts`**: A meta-agent for creating custom output styles for Claude.
+- **`output-style-example.ts`**: Demonstrates how to launch Claude with a custom output style.
+- **`package-size-analyzer.ts`**: Analyzes package sizes to identify bundle bloat.
+- **`packx-bundle-optimizer.ts`**: Creates focused code bundles for AI analysis using `packx`.
+- **`portfolio-site-generator.ts`**: Transforms a GitHub profile into a professional portfolio website.
+- **`pr-review-checklist-generator.ts`**: Performs pre-submission hygiene checks and generates PR descriptions.
+- **`pull-request-risk-radar.ts`**: Spotlights risky pull requests before review.
+- **`quick-jsdoc-generator.ts`**: Generates JSDoc/TSDoc comments for functions and classes.
+- **`quick-type-generator.ts`**: Transforms JSON into TypeScript types, Zod schemas, and mock data factories.
+- **`readme-showcase-generator.ts`**: Transforms README files into eye-catching showcases.
+- **`release-gatekeeper-auditor.ts`**: Inspects a release candidate and assembles a readiness scorecard.
+- **`schema-drift-radar.ts`**: Keeps database schemas, migrations, and code in harmony.
+- **`side-project-incubator.ts`**: Transforms developer skills into actionable side project ideas.
+- **`smart-commit-message-generator.ts`**: Generates meaningful commit messages from staged changes.
+- **`sprint-debrief-synthesizer.ts`**: Turns sprint activity into crisp, stakeholder-ready updates.
+- **`stack-overflow-helper.ts`**: Turns error messages into solutions by searching Stack Overflow.
+- **`standup-snapshot-scribe.ts`**: Generates standup updates by mining recent repository activity.
+- **`storybook-coverage-keeper.ts`**: Audits component libraries to ensure Storybook completeness.
+- **`tech-blog-post-generator.ts`**: Transforms code changes into technical blog posts.
+- **`test-coverage-booster.ts`**: Identifies untested code and generates test cases.
+- **`test-flakiness-detective.ts`**: Hunts down and helps fix unreliable tests.
+- **`test-generator.ts`**: Analyzes a codebase and generates comprehensive test suites.
+- **`til-tweet-generator.ts`**: Generates "Today I Learned" tweets from Claude conversation history.
+- **`todo-collector.ts`**: Transforms scattered TODO comments into actionable tasks.
+- **`typescript-type-hardener.ts`**: Fixes TypeScript errors by strengthening type information.
+- **`vscode-extension-recreation-agent.ts`**: Reverse-engineers a VS Code extension and creates a rebuild plan.
+- **`zai-example.ts`**: Demonstrates using Claude via the Z.ai API endpoint.

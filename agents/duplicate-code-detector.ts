@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Duplicate Code Detector Agent
@@ -11,31 +11,117 @@
  * - Flags potential bugs where duplicated code was modified in one place but not others
  * - Prioritizes duplicates by potential impact (size, complexity, duplication count)
  * - Generates a quick summary report with file paths and line numbers
+ *
+ * Usage:
+ *   bun run agents/duplicate-code-detector.ts [path] [options]
+ *
+ * Examples:
+ *   # Detect duplicates in current directory
+ *   bun run agents/duplicate-code-detector.ts
+ *
+ *   # Scan specific project
+ *   bun run agents/duplicate-code-detector.ts /path/to/project
+ *
+ *   # Customize detection parameters
+ *   bun run agents/duplicate-code-detector.ts --min-lines 10 --similarity 90
+ *
+ *   # Custom output file
+ *   bun run agents/duplicate-code-detector.ts --output my-report.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const MIN_LINES = parseInt(process.argv.find(arg => arg.startsWith('--min-lines='))?.split('=')[1] || '5');
-const SIMILARITY_THRESHOLD = parseInt(process.argv.find(arg => arg.startsWith('--similarity='))?.split('=')[1] || '85');
-const OUTPUT_FILE = process.argv.includes('--output')
-  ? process.argv[process.argv.indexOf('--output') + 1] || 'duplicate-code-report.md'
-  : 'duplicate-code-report.md';
+interface DuplicateDetectorOptions {
+  projectPath: string;
+  minLines: number;
+  similarityThreshold: number;
+  outputFile: string;
+}
 
-async function main() {
-  console.log('🔍 Duplicate Code Detector');
-  console.log(`📁 Scanning project: ${PROJECT_PATH}`);
-  console.log(`📏 Minimum lines: ${MIN_LINES}`);
-  console.log(`🎯 Similarity threshold: ${SIMILARITY_THRESHOLD}%`);
-  console.log(`📄 Output file: ${OUTPUT_FILE}`);
-  console.log();
+const DEFAULT_MIN_LINES = 5;
+const DEFAULT_SIMILARITY = 85;
+const DEFAULT_OUTPUT_FILE = "duplicate-code-report.md";
 
-  const systemPrompt = `You are a Duplicate Code Detector agent that helps developers find copy-pasted code.
+function printHelp(): void {
+  console.log(`
+🔍 Duplicate Code Detector
+
+Usage:
+  bun run agents/duplicate-code-detector.ts [path] [options]
+
+Arguments:
+  path                    Project path to scan (default: current directory)
+
+Options:
+  --min-lines <number>    Minimum lines for duplicate detection (default: ${DEFAULT_MIN_LINES})
+  --similarity <number>   Similarity threshold percentage (default: ${DEFAULT_SIMILARITY})
+  --output <file>         Output report file (default: ${DEFAULT_OUTPUT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/duplicate-code-detector.ts
+  bun run agents/duplicate-code-detector.ts ./src
+  bun run agents/duplicate-code-detector.ts --min-lines 10 --similarity 90
+  bun run agents/duplicate-code-detector.ts --output my-report.md
+  `);
+}
+
+function parseOptions(): DuplicateDetectorOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const projectPath = positionals[0] ? resolve(positionals[0]) : process.cwd();
+
+  const rawMinLines = values["min-lines"] || values.minLines;
+  const rawSimilarity = values.similarity;
+  const rawOutput = values.output;
+
+  const minLines = typeof rawMinLines === "string" && rawMinLines.length > 0
+    ? parseInt(rawMinLines, 10)
+    : DEFAULT_MIN_LINES;
+
+  const similarityThreshold = typeof rawSimilarity === "string" && rawSimilarity.length > 0
+    ? parseInt(rawSimilarity, 10)
+    : DEFAULT_SIMILARITY;
+
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  if (isNaN(minLines) || minLines < 1) {
+    console.error("❌ Error: min-lines must be a positive number");
+    process.exit(1);
+  }
+
+  if (isNaN(similarityThreshold) || similarityThreshold < 0 || similarityThreshold > 100) {
+    console.error("❌ Error: similarity must be between 0 and 100");
+    process.exit(1);
+  }
+
+  return {
+    projectPath,
+    minLines,
+    similarityThreshold,
+    outputFile,
+  };
+}
+
+function buildSystemPrompt(options: DuplicateDetectorOptions): string {
+  const { minLines, similarityThreshold } = options;
+
+  return `You are a Duplicate Code Detector agent that helps developers find copy-pasted code.
 
 Your task is to:
 1. Scan the codebase for duplicate or near-duplicate code blocks:
-   - Focus on functions, methods, and significant code blocks (${MIN_LINES}+ lines)
-   - Look for exact duplicates and near-duplicates (${SIMILARITY_THRESHOLD}%+ similar)
+   - Focus on functions, methods, and significant code blocks (${minLines}+ lines)
+   - Look for exact duplicates and near-duplicates (${similarityThreshold}%+ similar)
    - Detect patterns like copy-paste with minor variable name changes
    - Identify duplicated logic with slightly different implementations
 
@@ -50,7 +136,7 @@ Your task is to:
 3. Prioritize duplicates by impact:
    - High: Large complex blocks (50+ lines) duplicated 3+ times
    - Medium: Medium blocks (20-50 lines) duplicated 2+ times
-   - Low: Small blocks (${MIN_LINES}-20 lines) duplicated 2+ times
+   - Low: Small blocks (${minLines}-20 lines) duplicated 2+ times
 
 4. Generate a comprehensive duplicate report with:
    - Executive summary (total duplicates, lines of duplicated code, potential savings)
@@ -73,8 +159,17 @@ IMPORTANT:
 - Provide actionable refactoring suggestions
 - Highlight cases where duplicates have diverged (potential bugs)
 - Calculate potential line savings from consolidation`;
+}
 
-  const prompt = `Scan the project at: ${PROJECT_PATH} to find duplicate code blocks.
+function buildPrompt(options: DuplicateDetectorOptions): string {
+  const { projectPath, minLines, similarityThreshold, outputFile } = options;
+
+  return `Scan the project at: ${projectPath} to find duplicate code blocks.
+
+Configuration:
+- Minimum lines for detection: ${minLines}
+- Similarity threshold: ${similarityThreshold}%
+- Output file: ${outputFile}
 
 Follow these steps:
 
@@ -91,10 +186,10 @@ Use Grep strategically to find potential duplicates:
 - Identify repeated error handling patterns
 
 ## Step 3: Analyze Code Blocks
-For each potential duplicate:
+For each potential duplicate (minimum ${minLines}+ lines):
 - Read the full code context
 - Compare blocks for similarity
-- Calculate similarity percentage (exact match = 100%, minor differences = 85-99%)
+- Calculate similarity percentage (exact match = 100%, minor differences = ${similarityThreshold}-99%)
 - Identify what's different between copies
 - Determine if differences are intentional or bugs
 
@@ -106,7 +201,7 @@ Prioritize by:
 4. Maintenance risk (has the code diverged?)
 
 ## Step 5: Generate Report
-Save as '${OUTPUT_FILE}' with:
+Save as '${outputFile}' with:
 
 # Duplicate Code Report
 
@@ -167,59 +262,83 @@ export function validateInput(data: any) { ... }
 - Estimated effort to consolidate: X hours
 - Estimated maintenance time saved annually: X hours
 
-Focus on finding meaningful duplicates that justify refactoring. Be thorough but finish quickly (under 15 seconds).`;
+Focus on finding meaningful duplicates that justify refactoring. Be thorough but finish quickly.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Glob',
-          'Grep',
-          'Read',
-          'Bash',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["min-lines", "minLines", "similarity", "output", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Duplicate detection complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Report saved to: ${OUTPUT_FILE}`);
-          console.log('\n💡 Tips:');
-          console.log('  - Focus on high-priority duplicates first');
-          console.log('  - Check divergent duplicates for potential bugs');
-          console.log('  - Extract common patterns to shared utilities');
-        } else {
-          console.error('\n❌ Duplicate detection failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running duplicate code detector:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔍 Duplicate Code Detector\n");
+console.log(`📁 Project: ${options.projectPath}`);
+console.log(`📏 Minimum lines: ${options.minLines}`);
+console.log(`🎯 Similarity threshold: ${options.similarityThreshold}%`);
+console.log(`📄 Output file: ${options.outputFile}`);
+console.log("");
+
+// Change to project directory if different from cwd
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Bash",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  'append-system-prompt': systemPrompt,
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original directory
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+
+  if (exitCode === 0) {
+    console.log("\n✅ Duplicate detection complete!\n");
+    console.log(`📄 Report saved to: ${options.outputFile}`);
+    console.log("\n💡 Tips:");
+    console.log("  - Focus on high-priority duplicates first");
+    console.log("  - Check divergent duplicates for potential bugs");
+    console.log("  - Extract common patterns to shared utilities");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original directory on error
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

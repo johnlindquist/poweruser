@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Incident Postmortem Composer
@@ -14,20 +14,21 @@
  * - Generates ready-to-share artifacts (longform report and optional customer comms draft)
  *
  * Usage:
- *   bun agents/incident-postmortem-composer.ts [incidentWorkspace]
+ *   bun run agents/incident-postmortem-composer.ts [incidentWorkspace]
  *     --incident-id INC-1234
  *     --output reports/postmortem.md
  *     --channels engineering,leadership,customer
  *     --timezone UTC
  *     [--no-customer-comms]
  *     [--no-metrics]
+ *     [--help]
  */
 
-import path from "node:path";
-import process from "node:process";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-interface CliOptions {
+interface IncidentPostmortemOptions {
   workspacePath: string;
   incidentId?: string;
   outputPath: string;
@@ -37,123 +38,94 @@ interface CliOptions {
   includeMetrics: boolean;
 }
 
-function parseCliArgs(argv: string[]): CliOptions {
-  const positional: string[] = [];
-  let incidentId: string | undefined;
-  let channels: string[] | undefined;
-  let timezone: string | undefined;
-  let includeCustomerComms = true;
-  let includeMetrics = true;
-  let outputValue: string | undefined;
+const DEFAULT_OUTPUT_FILE = "incident-postmortem.md";
+const DEFAULT_CHANNELS = ["engineering", "leadership", "customer-success"];
 
-  const expectValue = (args: string[], index: number, flag: string): string => {
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error(`Missing value for ${flag}`);
-    }
-    return value;
-  };
+function printHelp(): void {
+  console.log(`
+🚨 Incident Postmortem Composer
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) {
-      continue;
-    }
+Usage:
+  bun run agents/incident-postmortem-composer.ts [workspace] [options]
 
-    if (!arg.startsWith("--")) {
-      positional.push(arg);
-      continue;
-    }
+Arguments:
+  workspace               Path to incident workspace (default: current directory)
 
-    switch (arg) {
-      case "--incident-id": {
-        incidentId = expectValue(argv, i, "--incident-id");
-        i += 1;
-        break;
-      }
-      case "--channels": {
-        const value = expectValue(argv, i, "--channels");
-        channels = value.split(",").map((chunk) => chunk.trim()).filter(Boolean);
-        i += 1;
-        break;
-      }
-      case "--timezone": {
-        timezone = expectValue(argv, i, "--timezone");
-        i += 1;
-        break;
-      }
-      case "--output": {
-        outputValue = expectValue(argv, i, "--output");
-        i += 1;
-        break;
-      }
-      case "--no-customer-comms": {
-        includeCustomerComms = false;
-        break;
-      }
-      case "--no-metrics": {
-        includeMetrics = false;
-        break;
-      }
-      default: {
-        throw new Error(`Unknown flag: ${arg}`);
-      }
-    }
+Options:
+  --incident-id <id>      Incident identifier (e.g., INC-1234)
+  --output <file>         Output file (default: ${DEFAULT_OUTPUT_FILE})
+  --channels <list>       Comma-separated audience channels (default: ${DEFAULT_CHANNELS.join(",")})
+  --timezone <tz>         Timezone for timestamps (default: system timezone)
+  --no-customer-comms     Skip customer communications draft
+  --no-metrics            Skip quantitative metrics analysis
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/incident-postmortem-composer.ts
+  bun run agents/incident-postmortem-composer.ts ./incidents/inc-123
+  bun run agents/incident-postmortem-composer.ts --incident-id INC-1234 --output reports/postmortem.md
+  bun run agents/incident-postmortem-composer.ts --channels engineering,leadership --no-customer-comms
+  `);
+}
+
+function parseOptions(): IncidentPostmortemOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
 
-  const resolvedWorkspace = positional.length > 0
-    ? path.resolve(process.cwd(), positional[0]!)
+  const workspacePath = positionals[0]
+    ? resolve(positionals[0])
     : process.cwd();
 
-  const resolvedOutput = path.resolve(
-    resolvedWorkspace,
-    outputValue ?? "incident-postmortem.md",
+  const rawIncidentId = values["incident-id"];
+  const incidentId = typeof rawIncidentId === "string" && rawIncidentId.length > 0
+    ? rawIncidentId
+    : undefined;
+
+  const rawOutput = values.output;
+  const outputPath = resolve(
+    workspacePath,
+    typeof rawOutput === "string" && rawOutput.length > 0
+      ? rawOutput
+      : DEFAULT_OUTPUT_FILE
   );
 
+  const rawChannels = values.channels;
+  const audienceChannels = typeof rawChannels === "string" && rawChannels.length > 0
+    ? rawChannels.split(",").map((ch) => ch.trim()).filter(Boolean)
+    : DEFAULT_CHANNELS;
+
+  const rawTimezone = values.timezone;
+  const timezone = typeof rawTimezone === "string" && rawTimezone.length > 0
+    ? rawTimezone
+    : (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+
+  const includeCustomerComms = values["no-customer-comms"] !== true;
+  const includeMetrics = values["no-metrics"] !== true;
+
   return {
-    workspacePath: resolvedWorkspace,
+    workspacePath,
     incidentId,
-    outputPath: resolvedOutput,
-    audienceChannels: channels && channels.length > 0
-      ? channels
-      : ["engineering", "leadership", "customer-success"],
-    timezone: timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"),
+    outputPath,
+    audienceChannels,
+    timezone,
     includeCustomerComms,
     includeMetrics,
   };
 }
 
 function formatChannels(channels: string[]): string {
-  return channels.map((entry) => entry.trim()).filter(Boolean).join(", ");
+  return channels.join(", ");
 }
 
-async function main(): Promise<void> {
-  let options: CliOptions;
+function buildSystemPrompt(options: IncidentPostmortemOptions): string {
+  const channelSummary = formatChannels(options.audienceChannels);
 
-  try {
-    options = parseCliArgs(process.argv.slice(2));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("❌ Failed to parse arguments:", message);
-    console.error(
-      "Usage: bun agents/incident-postmortem-composer.ts [incidentWorkspace] --incident-id INC-123 --output reports/postmortem.md --channels engineering,leadership,customer --timezone UTC [--no-customer-comms] [--no-metrics]",
-    );
-    process.exit(1);
-    return;
-  }
-
-  console.log("🚨 Incident Postmortem Composer");
-  console.log("================================\n");
-  console.log(`📁 Workspace: ${options.workspacePath}`);
-  console.log(`🆔 Incident ID: ${options.incidentId ?? "(auto-detect from evidence)"}`);
-  console.log(`🕑 Timezone: ${options.timezone}`);
-  console.log(`🧑‍🤝‍🧑 Audience channels: ${formatChannels(options.audienceChannels)}`);
-  console.log(`📝 Output file: ${options.outputPath}`);
-  console.log(`📊 Metrics: ${options.includeMetrics ? "included" : "skipped"}`);
-  console.log(`📨 Customer comms draft: ${options.includeCustomerComms ? "included" : "skipped"}`);
-  console.log();
-
-  const systemPrompt = `You are the Incident Postmortem Composer, an elite SRE/operations analyst that turns noisy incident artifacts into a crisp, blameless retrospective.
+  return `You are the Incident Postmortem Composer, an elite SRE/operations analyst that turns noisy incident artifacts into a crisp, blameless retrospective.
 
 Core directives:
 - Operate inside the incident workspace at ${options.workspacePath}.
@@ -172,12 +144,14 @@ Constraints:
 - Never fabricate data. If evidence is missing, flag the gap and suggest how to obtain it.
 - Link back to file paths, ticket IDs, or log excerpts for every key claim.
 - All timestamps in output must note the ${options.timezone} timezone.
-- Provide both executive summary and deep-dive sections tailored to ${formatChannels(options.audienceChannels)}.
+- Provide both executive summary and deep-dive sections tailored to ${channelSummary}.
 - Keep remediation tasks realistic and measurable.`;
+}
 
-  const channelSummary = options.audienceChannels.join(", ");
+function buildPrompt(options: IncidentPostmortemOptions): string {
+  const channelSummary = formatChannels(options.audienceChannels);
 
-  const userPrompt = `Assemble a complete incident postmortem for the workspace at ${options.workspacePath}.
+  return `Assemble a complete incident postmortem for the workspace at ${options.workspacePath}.
 
 Inputs:
 - Incident identifier: ${options.incidentId ?? "Detect from evidence (alerts, transcripts, filenames)."}
@@ -197,48 +171,76 @@ Deliverables:
 8. Next review cadence: suggest follow-up review or drill.
 
 Use Write to persist the final report to ${options.outputPath}. Include callouts for missing data or recommended next data pulls.`;
+}
 
-  const result = query({
-    prompt: userPrompt,
-    options: {
-      systemPrompt,
-      model: "claude-sonnet-4-5-20250929",
-      cwd: options.workspacePath,
-      allowedTools: ["Read", "Grep", "Write", "TodoWrite", "Bash", "Glob"],
-      permissionMode: "acceptEdits",
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["incident-id", "output", "channels", "timezone", "no-customer-comms", "no-metrics", "help", "h"] as const;
 
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      for (const content of message.message.content) {
-        if (content.type === "text") {
-          console.log(content.text);
-        }
-        if (content.type === "tool_use") {
-          console.log(`\n🔧 Using tool: ${content.name}`);
-        }
-      }
-    }
-
-    if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n" + "=".repeat(60));
-        console.log("✅ Postmortem composed successfully");
-        console.log("=".repeat(60));
-        console.log(message.result);
-        console.log(`\n💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-      } else {
-        console.error("\n❌ Postmortem generation failed:", message.subtype);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🚨 Incident Postmortem Composer\n");
+console.log(`📁 Workspace: ${options.workspacePath}`);
+console.log(`🆔 Incident ID: ${options.incidentId ?? "(auto-detect from evidence)"}`);
+console.log(`🕑 Timezone: ${options.timezone}`);
+console.log(`🧑‍🤝‍🧑 Audience channels: ${formatChannels(options.audienceChannels)}`);
+console.log(`📝 Output file: ${options.outputPath}`);
+console.log(`📊 Metrics: ${options.includeMetrics ? "included" : "skipped"}`);
+console.log(`📨 Customer comms draft: ${options.includeCustomerComms ? "included" : "skipped"}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Grep",
+  "Glob",
+  "Write",
+  "TodoWrite",
+  "Bash",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "append-system-prompt": systemPrompt,
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+};
+
+// Change to the workspace directory before running claude
+const originalCwd = process.cwd();
+process.chdir(options.workspacePath);
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Postmortem composed successfully!\n");
+    console.log(`📄 Full report: ${options.outputPath}`);
+    console.log("\nNext steps:");
+    console.log("1. Review the postmortem report for completeness");
+    console.log("2. Share with stakeholders on appropriate channels");
+    console.log("3. Track remediation tasks to completion");
+    console.log("4. Schedule follow-up review or incident drill");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+} finally {
+  process.chdir(originalCwd);
+}

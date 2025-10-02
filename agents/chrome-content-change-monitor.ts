@@ -121,12 +121,10 @@ const claudeSettings: Settings = {};
 
 const allowedTools = [
   'mcp__chrome-devtools__navigate_page',
-  'mcp__chrome-devtools__new_page',
   'mcp__chrome-devtools__take_snapshot',
   'mcp__chrome-devtools__take_screenshot',
   'mcp__chrome-devtools__evaluate_script',
   'mcp__chrome-devtools__wait_for',
-  'mcp__chrome-devtools__navigate_page_history',
   'Write',
   'TodoWrite',
 ];

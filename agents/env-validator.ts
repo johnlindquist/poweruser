@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Environment Variable Validator Agent
@@ -16,7 +16,8 @@
  *   bun run agents/env-validator.ts [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface EnvValidatorOptions {
   envPath?: string;
@@ -27,25 +28,77 @@ interface EnvValidatorOptions {
   strict?: boolean;
 }
 
-async function validateEnvironment(options: EnvValidatorOptions) {
-  const {
-    envPath = '.env',
-    examplePath = '.env.example',
-    generateTypes = false,
-    generateStarter = false,
-    checkUsage = true,
-    strict = false,
-  } = options;
+function printHelp(): void {
+  console.log(`
+🔒 Environment Variable Validator
 
-  console.log('🔒 Environment Variable Validator\n');
-  console.log(`Example file: ${examplePath}`);
-  console.log(`Environment file: ${envPath}`);
-  console.log(`Check usage: ${checkUsage ? '✅' : '❌'}`);
-  console.log(`Generate types: ${generateTypes ? '✅' : '❌'}`);
-  console.log(`Generate starter: ${generateStarter ? '✅' : '❌'}`);
-  console.log(`Strict mode: ${strict ? '✅' : '❌'}\n`);
+Validates environment configuration and generates helpful files.
 
-  const prompt = `
+Usage:
+  bun run agents/env-validator.ts [options]
+
+Options:
+  --env <path>           Path to .env file (default: .env)
+  --example <path>       Path to .env.example file (default: .env.example)
+  --generate-types       Generate TypeScript types (.env.types.ts)
+  --generate-starter     Generate starter .env file
+  --no-check-usage       Skip scanning codebase for env var usage
+  --strict               Treat warnings as errors and exit with error code
+  --help, -h             Show this help message
+
+Examples:
+  # Basic validation
+  bun run agents/env-validator.ts
+
+  # Generate types and starter file
+  bun run agents/env-validator.ts --generate-types --generate-starter
+
+  # Validate specific env files
+  bun run agents/env-validator.ts --env .env.production --example .env.example
+
+  # Strict mode for CI/CD
+  bun run agents/env-validator.ts --strict
+  `);
+}
+
+function parseOptions(): EnvValidatorOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawEnv = values.env;
+  const rawExample = values.example;
+  const generateTypes = values["generate-types"] === true;
+  const generateStarter = values["generate-starter"] === true;
+  const checkUsage = values["no-check-usage"] !== true;
+  const strict = values.strict === true;
+
+  const envPath = typeof rawEnv === "string" && rawEnv.length > 0
+    ? rawEnv
+    : ".env";
+
+  const examplePath = typeof rawExample === "string" && rawExample.length > 0
+    ? rawExample
+    : ".env.example";
+
+  return {
+    envPath,
+    examplePath,
+    generateTypes,
+    generateStarter,
+    checkUsage,
+    strict,
+  };
+}
+
+function buildPrompt(options: EnvValidatorOptions): string {
+  const { envPath, examplePath, generateTypes, generateStarter, checkUsage, strict } = options;
+
+  return `
 You are an environment variable validator. Your task is to analyze environment configuration files and ensure correctness.
 
 STEPS TO FOLLOW:
@@ -128,189 +181,80 @@ At the end, provide a summary with total issues found.
 
 Begin your analysis now.
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      // Only allow necessary tools
-      allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'TodoWrite'],
-      // Auto-accept file reads and greps, ask for writes
-      permissionMode: generateTypes || generateStarter ? 'acceptEdits' : 'default',
-      // Use Sonnet for good balance of speed and capability
-      model: 'claude-sonnet-4-5-20250929',
-      // Limit thinking for speed
-      maxThinkingTokens: 5000,
-      // Should complete quickly
-      maxTurns: 10,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Read') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`📖 Reading ${toolInput.file_path}`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`🔍 Searching for pattern: ${toolInput.pattern}`);
-                  } else if (input.tool_name === 'Write') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`✍️  Generating ${toolInput.file_path}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    console.log(`✅ File created successfully`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolResponse = input.tool_response as any;
-                    if (toolResponse.matches) {
-                      console.log(`   Found ${toolResponse.matches.length} matches`);
-                    }
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "env",
+    "example",
+    "generate-types",
+    "generate-starter",
+    "no-check-usage",
+    "strict",
+    "help",
+    "h"
+  ] as const;
 
-  const startTime = Date.now();
-  let reportText = '';
-
-  // Stream results
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        // Collect report text
-        reportText += text + '\n';
-        // Show progress
-        if (
-          text.includes('Reading') ||
-          text.includes('Scanning') ||
-          text.includes('Analyzing') ||
-          text.includes('Validating')
-        ) {
-          console.log(`💭 ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`);
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📋 Validation Report');
-        console.log('='.repeat(60));
-        console.log('\n' + message.result);
-        console.log('\n' + '='.repeat(60));
-        console.log(`⚡ Completed in ${elapsedTime}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(
-          `📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`🚀 Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-
-        // Exit with error code if strict mode and issues found
-        if (strict && message.result.includes('❌')) {
-          console.log('\n❌ Validation failed in strict mode');
-          process.exit(1);
-        }
-      } else {
-        console.error('\n❌ Error:', message.subtype);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-🔒 Environment Variable Validator
-
-Validates environment configuration and generates helpful files.
-
-Usage:
-  bun run agents/env-validator.ts [options]
-
-Options:
-  --env <path>           Path to .env file (default: .env)
-  --example <path>       Path to .env.example file (default: .env.example)
-  --generate-types       Generate TypeScript types (.env.types.ts)
-  --generate-starter     Generate starter .env file
-  --no-check-usage       Skip scanning codebase for env var usage
-  --strict               Treat warnings as errors and exit with error code
-  --help, -h             Show this help message
-
-Examples:
-  # Basic validation
-  bun run agents/env-validator.ts
-
-  # Generate types and starter file
-  bun run agents/env-validator.ts --generate-types --generate-starter
-
-  # Validate specific env files
-  bun run agents/env-validator.ts --env .env.production --example .env.example
-
-  # Strict mode for CI/CD
-  bun run agents/env-validator.ts --strict
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse options
-const options: EnvValidatorOptions = {
-  checkUsage: true,
-  strict: false,
-  generateTypes: false,
-  generateStarter: false,
+console.log("🔒 Environment Variable Validator\n");
+console.log(`Example file: ${options.examplePath}`);
+console.log(`Environment file: ${options.envPath}`);
+console.log(`Check usage: ${options.checkUsage ? "✅" : "❌"}`);
+console.log(`Generate types: ${options.generateTypes ? "✅" : "❌"}`);
+console.log(`Generate starter: ${options.generateStarter ? "✅" : "❌"}`);
+console.log(`Strict mode: ${options.strict ? "✅" : "❌"}\n`);
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.generateTypes || options.generateStarter ? "acceptEdits" : "default",
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--env':
-      options.envPath = args[++i];
-      break;
-    case '--example':
-      options.examplePath = args[++i];
-      break;
-    case '--generate-types':
-      options.generateTypes = true;
-      break;
-    case '--generate-starter':
-      options.generateStarter = true;
-      break;
-    case '--no-check-usage':
-      options.checkUsage = false;
-      break;
-    case '--strict':
-      options.strict = true;
-      break;
-  }
-}
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Environment validation complete!\n");
+    if (options.generateTypes) {
+      console.log("📄 TypeScript types generated: .env.types.ts");
+    }
+    if (options.generateStarter) {
+      console.log("📄 Starter file generated: .env.starter");
+    }
 
-// Run the validator
-validateEnvironment(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+    // Exit with error code if strict mode was enabled (claude wrapper handles the exit)
+    if (options.strict) {
+      console.log("\nNote: Check the validation report above for any issues.");
+      console.log("In strict mode, the agent should have exited with error code if issues were found.");
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

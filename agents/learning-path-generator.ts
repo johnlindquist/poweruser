@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Learning Path Generator
@@ -17,30 +17,79 @@
  * Perfect for developers who want to level up but don't know where to focus.
  *
  * Usage:
- *   bun run agents/learning-path-generator.ts [directory] [target-role]
+ *   bun run agents/learning-path-generator.ts [directory] [target-role] [options]
  *
  * Examples:
  *   bun run agents/learning-path-generator.ts
  *   bun run agents/learning-path-generator.ts . "Senior Frontend Engineer"
  *   bun run agents/learning-path-generator.ts ~/projects/my-app "Full Stack Developer"
+ *   bun run agents/learning-path-generator.ts . --report custom-path.md
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { resolve } from "path";
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-// Parse command-line arguments
-const args = process.argv.slice(2);
-const targetDir = args[0] ? resolve(args[0]) : process.cwd();
-const targetRole = args[1] || "Senior Software Engineer";
+interface LearningPathOptions {
+  targetDir: string;
+  targetRole: string;
+  reportFile: string;
+}
 
-console.log("🎓 Learning Path Generator");
-console.log("=".repeat(50));
-console.log(`📁 Analyzing directory: ${targetDir}`);
-console.log(`🎯 Target role: ${targetRole}`);
-console.log("=".repeat(50));
-console.log();
+const DEFAULT_ROLE = "Senior Software Engineer";
+const DEFAULT_REPORT_PREFIX = "learning-path";
 
-const prompt = `You are a Learning Path Generator that helps developers create personalized learning roadmaps.
+function printHelp(): void {
+  console.log(`
+🎓 Learning Path Generator
+
+Usage:
+  bun run agents/learning-path-generator.ts [directory] [target-role] [options]
+
+Arguments:
+  directory               Directory to analyze (default: current directory)
+  target-role            Target role/position (default: ${DEFAULT_ROLE})
+
+Options:
+  --report <file>        Output report filename (default: ${DEFAULT_REPORT_PREFIX}-YYYY-MM-DD.md)
+  --help, -h             Show this help
+
+Examples:
+  bun run agents/learning-path-generator.ts
+  bun run agents/learning-path-generator.ts . "Senior Frontend Engineer"
+  bun run agents/learning-path-generator.ts ~/projects/my-app "Full Stack Developer"
+  bun run agents/learning-path-generator.ts . "Tech Lead" --report my-path.md
+  `);
+}
+
+function parseOptions(): LearningPathOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const targetDir = positionals[0] ? resolve(positionals[0]) : process.cwd();
+  const targetRole = positionals[1] || DEFAULT_ROLE;
+
+  const rawReport = values.report;
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : `${DEFAULT_REPORT_PREFIX}-${new Date().toISOString().split('T')[0]}.md`;
+
+  return {
+    targetDir,
+    targetRole,
+    reportFile,
+  };
+}
+
+function buildPrompt(options: LearningPathOptions): string {
+  const { targetDir, targetRole, reportFile } = options;
+
+  return `You are a Learning Path Generator that helps developers create personalized learning roadmaps.
 
 Analyze the codebase at: ${targetDir}
 
@@ -92,7 +141,7 @@ Please perform the following analysis:
    - Set up a system for regular self-assessment
 
 **Output Format:**
-Generate a comprehensive markdown document named \`learning-path-${new Date().toISOString().split('T')[0]}.md\` with all the information above, beautifully formatted with:
+Generate a comprehensive markdown document named \`${reportFile}\` with all the information above, beautifully formatted with:
 - Executive summary at the top
 - Clear sections with headings and subheadings
 - Bullet points and numbered lists
@@ -103,68 +152,83 @@ Generate a comprehensive markdown document named \`learning-path-${new Date().to
 Be specific, actionable, and encouraging. This roadmap should transform aimless learning into a strategic career investment.
 
 IMPORTANT: Write the final learning path to a file using the Write tool.`;
+}
 
-async function main() {
-  try {
-    const startTime = Date.now();
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["report", "help", "h"] as const;
 
-    // Execute the query
-    const result = query({
-      prompt,
-      options: {
-        cwd: targetDir,
-        allowedTools: [
-          "Bash",
-          "Read",
-          "Grep",
-          "Glob",
-          "WebSearch",
-          "Write"
-        ],
-        permissionMode: "bypassPermissions",
-        model: "claude-sonnet-4-5-20250929",
-      },
-    });
-
-    // Process streaming results
-    let assistantMessages: string[] = [];
-
-    for await (const message of result) {
-      if (message.type === "assistant") {
-        // Extract text content from assistant messages
-        for (const block of message.message.content) {
-          if (block.type === "text") {
-            assistantMessages.push(block.text);
-          }
-        }
-      } else if (message.type === "result") {
-        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log();
-        console.log("=".repeat(50));
-        console.log("✅ Learning Path Generated Successfully!");
-        console.log("=".repeat(50));
-        console.log(`⏱️  Completed in ${duration}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-        console.log(`📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-        console.log();
-
-        if (message.subtype === "success") {
-          console.log("📄 Summary:");
-          console.log(message.result);
-        } else if (message.subtype === "error_max_turns") {
-          console.error("⚠️  Warning: Reached maximum turns limit");
-        } else if (message.subtype === "error_during_execution") {
-          console.error("❌ Error occurred during execution");
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-
-  } catch (error) {
-    console.error("❌ Error:", error instanceof Error ? error.message : String(error));
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🎓 Learning Path Generator\n");
+console.log(`📁 Analyzing directory: ${options.targetDir}`);
+console.log(`🎯 Target role: ${options.targetRole}`);
+console.log(`📄 Report: ${options.reportFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Grep",
+  "Glob",
+  "WebSearch",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+// Change working directory to target
+const originalCwd = process.cwd();
+if (options.targetDir !== originalCwd) {
+  process.chdir(options.targetDir);
+}
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": prompt,
+};
+
+try {
+  const exitCode = await claude("", defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Learning path generated successfully!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    console.log("\nNext steps:");
+    console.log("1. Review your personalized learning roadmap");
+    console.log("2. Bookmark recommended resources");
+    console.log("3. Set up progress tracking system");
+    console.log("4. Start with the first learning objective");
+    console.log("5. Consider contributing to suggested open source projects");
+  }
+
+  // Restore original working directory
+  if (options.targetDir !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original working directory on error
+  if (options.targetDir !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

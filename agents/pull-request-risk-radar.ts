@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Pull Request Risk Radar
@@ -8,7 +8,7 @@
  * hotspots that deserve reviewer attention and to recommend protective steps before merge.
  *
  * Usage:
- *   bun run agents/pull-request-risk-radar.ts [compare-range] [--base main] [--report risk.md]
+ *   bun run agents/pull-request-risk-radar.ts [compare-range] [options]
  *
  * Examples:
  *   # Compare current branch against main
@@ -16,12 +16,15 @@
  *
  *   # Analyze a specific PR range
  *   bun run agents/pull-request-risk-radar.ts origin/main...HEAD --report pr-risk.md
+ *
+ *   # Analyze a specific PR number
+ *   bun run agents/pull-request-risk-radar.ts --base main --pr 123
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-interface CliOptions {
+interface PullRequestRiskOptions {
   baseBranch: string;
   compareRange: string;
   reportFile: string;
@@ -29,32 +32,71 @@ interface CliOptions {
   maxRecentCommits: number;
 }
 
-function getCliOptions(): CliOptions {
-  const { positionals, values } = parseArgs({
-    args: Bun.argv.slice(2),
-    allowPositionals: true,
-    options: {
-      base: { type: 'string' },
-      report: { type: 'string' },
-      pr: { type: 'string' },
-      'max-commits': { type: 'string' },
-    },
-  });
+const DEFAULT_REPORT_FILE = "pull-request-risk-report.md";
+const DEFAULT_BASE_BRANCH = "main";
+const DEFAULT_MAX_COMMITS = 20;
 
-  const baseBranch = (values.base as string | undefined) || 'main';
-  let compareRange = positionals[0] || 'HEAD';
-  const reportFile = (values.report as string | undefined) || 'pull-request-risk-report.md';
-  const prNumber = values.pr as string | undefined;
+function printHelp(): void {
+  console.log(`
+🛰️  Pull Request Risk Radar
 
-  let maxRecentCommits = 20;
-  if (values['max-commits']) {
-    const value = Number(values['max-commits']);
+Usage:
+  bun run agents/pull-request-risk-radar.ts [compare-range] [options]
+
+Arguments:
+  compare-range          Git range to analyze (default: HEAD)
+
+Options:
+  --base <branch>        Base branch to compare against (default: ${DEFAULT_BASE_BRANCH})
+  --report <file>        Output report file (default: ${DEFAULT_REPORT_FILE})
+  --pr <number>          Pull request number for context
+  --max-commits <n>      Ownership lookback commits (default: ${DEFAULT_MAX_COMMITS})
+  --help, -h             Show this help
+
+Examples:
+  bun run agents/pull-request-risk-radar.ts --base main
+  bun run agents/pull-request-risk-radar.ts origin/main...HEAD --report pr-risk.md
+  bun run agents/pull-request-risk-radar.ts --base main --pr 123
+  `);
+}
+
+function parseOptions(): PullRequestRiskOptions | null {
+  const { positionals, values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawBase = values.base;
+  const rawReport = values.report;
+  const rawPr = values.pr;
+  const rawMaxCommits = values['max-commits'];
+
+  const baseBranch = typeof rawBase === "string" && rawBase.length > 0
+    ? rawBase
+    : DEFAULT_BASE_BRANCH;
+
+  let compareRange = positionals[0] || "HEAD";
+
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
+
+  const prNumber = typeof rawPr === "string" && rawPr.length > 0
+    ? rawPr
+    : undefined;
+
+  let maxRecentCommits = DEFAULT_MAX_COMMITS;
+  if (typeof rawMaxCommits === "string") {
+    const value = Number(rawMaxCommits);
     if (!Number.isNaN(value) && value > 0) {
       maxRecentCommits = value;
     }
   }
 
-  if (compareRange === 'HEAD') {
+  if (compareRange === "HEAD") {
     compareRange = `${baseBranch}...HEAD`;
   }
 
@@ -67,22 +109,12 @@ function getCliOptions(): CliOptions {
   };
 }
 
-async function main() {
-  const { baseBranch, compareRange, reportFile, prNumber, maxRecentCommits } = getCliOptions();
-
-  console.log('🛰️  Pull Request Risk Radar\n');
-  console.log(`📂 Repo: ${process.cwd()}`);
-  console.log(`🔀 Compare Range: ${compareRange}`);
-  console.log(`🌳 Base Branch: ${baseBranch}`);
-  if (prNumber) {
-    console.log(`📦 PR #: ${prNumber}`);
-  }
-  console.log(`🗂️  Report File: ${reportFile}`);
-  console.log(`🧭 Ownership lookback commits: ${maxRecentCommits}\n`);
+function buildPrompt(options: PullRequestRiskOptions): string {
+  const { baseBranch, compareRange, reportFile, prNumber, maxRecentCommits } = options;
 
   const prContextLine = prNumber ? `- Pull request number: ${prNumber}\n` : '';
 
-  const prompt = `
+  return `
 You are the Pull Request Risk Radar agent. Your mission is to inspect the current repository and produce a
 concise but thorough risk briefing for reviewers before they look at the pull request.
 
@@ -158,97 +190,63 @@ If any hotspot scores 70 or higher, record follow-up tasks using the \`TodoWrite
 
 Close the session by outputting a brief text summary (<=5 sentences) that reiterates the top three reviewer actions.
 `.trim();
+}
 
-  const sdkOptions: Options = {
-    cwd: process.cwd(),
-    permissionMode: 'bypassPermissions',
-    allowedTools: [
-      'Bash',
-      'Read',
-      'Grep',
-      'Glob',
-      'Write',
-      'TodoWrite',
-    ],
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code',
-    },
-    maxTurns: 60,
-    hooks: {
-      PreToolUse: [
-        {
-          hooks: [
-            async (input: any) => {
-              if (input.hook_event_name === 'PreToolUse') {
-                if (input.tool_name === 'Bash') {
-                  const toolInput = input.tool_input as { command?: string };
-                  const command = toolInput?.command;
-                  if (typeof command === 'string') {
-                    console.log(`🛠️  Running: ${command}`);
-                  } else {
-                    console.log('🛠️  Running Bash command');
-                  }
-                } else if (input.tool_name === 'Write') {
-                  console.log(`📝 Writing risk report to ${reportFile}`);
-                } else if (input.tool_name === 'TodoWrite') {
-                  console.log('✅ Capturing high-priority follow-up tasks');
-                }
-              }
-              return { continue: true };
-            },
-          ],
-        },
-      ],
-      PostToolUse: [
-        {
-          hooks: [
-            async (input: any) => {
-              if (input.hook_event_name === 'PostToolUse') {
-                if (input.tool_name === 'Write') {
-                  console.log('📄 Risk report updated');
-                } else if (input.tool_name === 'TodoWrite') {
-                  console.log('🗒️  Follow-up checklist ready');
-                }
-              }
-              return { continue: true };
-            },
-          ],
-        },
-      ],
-    },
-  };
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["base", "report", "pr", "max-commits", "help", "h"] as const;
 
-  try {
-    for await (const message of query({ prompt, options: sdkOptions })) {
-      if (message.type === 'assistant') {
-        for (const content of message.message.content) {
-          if (content.type === 'text') {
-            const text = content.text.trim();
-            if (text.length > 0) {
-              console.log(text);
-            }
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Risk scan complete');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`🔢 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-          console.log(`📄 Report saved to: ${reportFile}`);
-        } else {
-          console.error(`\n❌ Risk analysis ended with subtype: ${message.subtype}`);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('\n❌ Error while running Pull Request Risk Radar:', error);
-    process.exit(1);
   }
 }
 
-main().catch((error) => {
-  console.error('❌ Unhandled error in Pull Request Risk Radar:', error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log('🛰️  Pull Request Risk Radar\n');
+console.log(`📂 Repo: ${process.cwd()}`);
+console.log(`🔀 Compare Range: ${options.compareRange}`);
+console.log(`🌳 Base Branch: ${options.baseBranch}`);
+if (options.prNumber) {
+  console.log(`📦 PR #: ${options.prNumber}`);
+}
+console.log(`🗂️  Report File: ${options.reportFile}`);
+console.log(`🧭 Ownership lookback commits: ${options.maxRecentCommits}\n`);
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Grep",
+  "Glob",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ Risk scan complete');
+    console.log(`📄 Report saved to: ${options.reportFile}`);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('\n❌ Error while running Pull Request Risk Radar:', error);
   process.exit(1);
-});
+}

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Error Log Detective Agent
@@ -17,41 +17,152 @@
  *   bun run agents/error-log-detective.ts [options]
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type GroupByType = 'error-type' | 'file' | 'timestamp';
 
 interface DetectiveOptions {
-  logPath?: string;
+  logPath: string;
   since?: string;
-  groupBy?: 'error-type' | 'file' | 'timestamp';
-  correlateWithGit?: boolean;
-  createIssues?: boolean;
-  prioritize?: boolean;
+  groupBy: GroupByType;
+  correlateWithGit: boolean;
+  createIssues: boolean;
+  prioritize: boolean;
   outputFile?: string;
-  maxErrors?: number;
+  maxErrors: number;
 }
 
-async function analyzeErrorLogs(options: DetectiveOptions) {
-  const {
-    logPath = 'error.log',
+const DEFAULT_LOG_PATH = 'error.log';
+const DEFAULT_GROUP_BY: GroupByType = 'error-type';
+const DEFAULT_MAX_ERRORS = 100;
+
+function printHelp(): void {
+  console.log(`
+🔍 Error Log Detective
+
+Transform cryptic error logs into actionable insights with AI-powered analysis.
+
+Usage:
+  bun run agents/error-log-detective.ts [options]
+
+Options:
+  --log <path>              Path to log file (default: ${DEFAULT_LOG_PATH})
+  --since <date>            Only analyze errors since date (e.g., "1 week ago", "2024-01-01")
+  --group-by <type>         Group errors by: error-type (default), file, or timestamp
+  --no-git                  Skip correlating errors with git history
+  --create-issues           Generate draft GitHub issues for high-priority errors
+  --no-prioritize          Skip error prioritization (show all equally)
+  --output <file>           Save full report to file
+  --max-errors <n>          Maximum number of errors to analyze (default: ${DEFAULT_MAX_ERRORS})
+  --help, -h                Show this help message
+
+Examples:
+  # Basic error analysis
+  bun run agents/error-log-detective.ts --log logs/production.log
+
+  # Analyze recent errors with git correlation
+  bun run agents/error-log-detective.ts --log error.log --since "3 days ago"
+
+  # Generate GitHub issues for top errors
+  bun run agents/error-log-detective.ts --log error.log --create-issues
+
+  # Full analysis with report output
+  bun run agents/error-log-detective.ts --log error.log --output error-analysis.md
+
+  # Quick analysis without git correlation
+  bun run agents/error-log-detective.ts --log error.log --no-git --max-errors 50
+
+Features:
+  ✅ Parses various log formats (JSON, plain text, structured logs)
+  ✅ Groups similar errors and identifies patterns
+  ✅ Analyzes stack traces to pinpoint code locations
+  ✅ Correlates errors with recent git commits
+  ✅ Prioritizes errors by severity and frequency
+  ✅ Suggests specific fixes with code examples
+  ✅ Generates draft GitHub issues for critical errors
+  ✅ Tracks error trends over time
+  ✅ Identifies regressions and cascading failures
+  `);
+}
+
+function parseOptions(): DetectiveOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawLog = values.log;
+  const rawSince = values.since;
+  const rawGroupBy = values['group-by'] || values.groupBy;
+  const rawMaxErrors = values['max-errors'] || values.maxErrors;
+  const rawOutput = values.output;
+
+  const logPath = typeof rawLog === "string" && rawLog.length > 0
+    ? resolve(rawLog)
+    : DEFAULT_LOG_PATH;
+
+  const since = typeof rawSince === "string" && rawSince.length > 0
+    ? rawSince
+    : undefined;
+
+  const groupBy = typeof rawGroupBy === "string" && rawGroupBy.length > 0
+    ? (rawGroupBy as GroupByType)
+    : DEFAULT_GROUP_BY;
+
+  if (!(["error-type", "file", "timestamp"] as const).includes(groupBy)) {
+    console.error("❌ Error: Invalid group-by value. Must be error-type, file, or timestamp");
+    process.exit(1);
+  }
+
+  const maxErrors = typeof rawMaxErrors === "string" && rawMaxErrors.length > 0
+    ? parseInt(rawMaxErrors, 10)
+    : typeof rawMaxErrors === "number"
+    ? rawMaxErrors
+    : DEFAULT_MAX_ERRORS;
+
+  if (isNaN(maxErrors) || maxErrors < 1) {
+    console.error("❌ Error: max-errors must be a positive number");
+    process.exit(1);
+  }
+
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : undefined;
+
+  const correlateWithGit = values['no-git'] !== true;
+  const createIssues = values['create-issues'] === true || values.createIssues === true;
+  const prioritize = values['no-prioritize'] !== true;
+
+  return {
+    logPath,
     since,
-    groupBy = 'error-type',
-    correlateWithGit = true,
-    createIssues = false,
-    prioritize = true,
+    groupBy,
+    correlateWithGit,
+    createIssues,
+    prioritize,
     outputFile,
-    maxErrors = 100,
+    maxErrors,
+  };
+}
+
+function buildPrompt(options: DetectiveOptions): string {
+  const {
+    logPath,
+    since,
+    groupBy,
+    correlateWithGit,
+    createIssues,
+    prioritize,
+    outputFile,
+    maxErrors,
   } = options;
 
-  console.log('🔍 Error Log Detective\n');
-  console.log(`Log file: ${logPath}`);
-  console.log(`Group by: ${groupBy}`);
-  console.log(`Since: ${since || 'all time'}`);
-  console.log(`Correlate with git: ${correlateWithGit ? '✅' : '❌'}`);
-  console.log(`Create GitHub issues: ${createIssues ? '✅' : '❌'}`);
-  console.log(`Prioritize errors: ${prioritize ? '✅' : '❌'}`);
-  console.log(`Max errors to analyze: ${maxErrors}\n`);
-
-  const prompt = `
+  return `
 You are an expert error log analyst and debugger. Your task is to analyze error logs, identify patterns, correlate with code changes, and provide actionable remediation steps.
 
 COMPREHENSIVE ERROR ANALYSIS STEPS:
@@ -235,210 +346,90 @@ ${outputFile ? `\nSave the full report to ${outputFile}` : ''}
 
 Begin your comprehensive error log analysis now.
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash', 'TodoWrite'],
-      permissionMode: createIssues || outputFile ? 'acceptEdits' : 'default',
-      model: 'claude-sonnet-4-5-20250929',
-      maxThinkingTokens: 10000,
-      maxTurns: 20,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Read') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`📖 Reading ${toolInput.file_path}`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`🔍 Searching for: ${toolInput.pattern}`);
-                  } else if (input.tool_name === 'Bash') {
-                    const toolInput = input.tool_input as any;
-                    const cmd = toolInput.command.substring(0, 70);
-                    console.log(`⚡ Running: ${cmd}${toolInput.command.length > 70 ? '...' : ''}`);
-                  } else if (input.tool_name === 'Write') {
-                    const toolInput = input.tool_input as any;
-                    console.log(`✍️  Writing ${toolInput.file_path}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    console.log(`✅ File written successfully`);
-                  } else if (input.tool_name === 'Grep') {
-                    const toolResponse = input.tool_response as any;
-                    if (toolResponse.matches) {
-                      console.log(`   Found ${toolResponse.matches.length} matches`);
-                    } else if (toolResponse.files) {
-                      console.log(`   Found matches in ${toolResponse.files.length} files`);
-                    }
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "log",
+    "since",
+    "group-by",
+    "groupBy",
+    "no-git",
+    "create-issues",
+    "createIssues",
+    "no-prioritize",
+    "output",
+    "max-errors",
+    "maxErrors",
+    "help",
+    "h",
+  ] as const;
 
-  const startTime = Date.now();
-
-  // Stream results
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        // Show progress for key actions
-        if (
-          text.includes('Analyzing') ||
-          text.includes('Parsing') ||
-          text.includes('Grouping') ||
-          text.includes('Correlating')
-        ) {
-          process.stdout.write('.');
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      if (message.subtype === 'success') {
-        console.log('\n\n' + '='.repeat(80));
-        console.log('🔍 ERROR LOG DETECTIVE ANALYSIS REPORT');
-        console.log('='.repeat(80));
-        console.log('\n' + message.result);
-        console.log('\n' + '='.repeat(80));
-        console.log(`⚡ Completed in ${elapsedTime}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(
-          `📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`🚀 Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-      } else {
-        console.error('\n❌ Error during analysis:', message.subtype);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-🔍 Error Log Detective
-
-Transform cryptic error logs into actionable insights with AI-powered analysis.
-
-Usage:
-  bun run agents/error-log-detective.ts [options]
-
-Options:
-  --log <path>              Path to log file (default: error.log)
-  --since <date>            Only analyze errors since date (e.g., "1 week ago", "2024-01-01")
-  --group-by <type>         Group errors by: error-type (default), file, or timestamp
-  --no-git                  Skip correlating errors with git history
-  --create-issues           Generate draft GitHub issues for high-priority errors
-  --no-prioritize          Skip error prioritization (show all equally)
-  --output <file>           Save full report to file
-  --max-errors <n>          Maximum number of errors to analyze (default: 100)
-  --help, -h                Show this help message
-
-Examples:
-  # Basic error analysis
-  bun run agents/error-log-detective.ts --log logs/production.log
-
-  # Analyze recent errors with git correlation
-  bun run agents/error-log-detective.ts --log error.log --since "3 days ago"
-
-  # Generate GitHub issues for top errors
-  bun run agents/error-log-detective.ts --log error.log --create-issues
-
-  # Full analysis with report output
-  bun run agents/error-log-detective.ts --log error.log --output error-analysis.md
-
-  # Quick analysis without git correlation
-  bun run agents/error-log-detective.ts --log error.log --no-git --max-errors 50
-
-Features:
-  ✅ Parses various log formats (JSON, plain text, structured logs)
-  ✅ Groups similar errors and identifies patterns
-  ✅ Analyzes stack traces to pinpoint code locations
-  ✅ Correlates errors with recent git commits
-  ✅ Prioritizes errors by severity and frequency
-  ✅ Suggests specific fixes with code examples
-  ✅ Generates draft GitHub issues for critical errors
-  ✅ Tracks error trends over time
-  ✅ Identifies regressions and cascading failures
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse options
-const options: DetectiveOptions = {
-  correlateWithGit: true,
-  prioritize: true,
-  createIssues: false,
-  groupBy: 'error-type',
-  maxErrors: 100,
+console.log('🔍 Error Log Detective\n');
+console.log(`Log file: ${options.logPath}`);
+console.log(`Group by: ${options.groupBy}`);
+console.log(`Since: ${options.since || 'all time'}`);
+console.log(`Correlate with git: ${options.correlateWithGit ? '✅' : '❌'}`);
+console.log(`Create GitHub issues: ${options.createIssues ? '✅' : '❌'}`);
+console.log(`Prioritize errors: ${options.prioritize ? '✅' : '❌'}`);
+console.log(`Max errors to analyze: ${options.maxErrors}`);
+if (options.outputFile) console.log(`Output file: ${options.outputFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "Bash",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.createIssues || options.outputFile ? "acceptEdits" : "default",
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--log':
-      options.logPath = args[++i];
-      break;
-    case '--since':
-      options.since = args[++i];
-      break;
-    case '--group-by':
-      const groupBy = args[++i];
-      if (groupBy === 'error-type' || groupBy === 'file' || groupBy === 'timestamp') {
-        options.groupBy = groupBy;
-      }
-      break;
-    case '--no-git':
-      options.correlateWithGit = false;
-      break;
-    case '--create-issues':
-      options.createIssues = true;
-      break;
-    case '--no-prioritize':
-      options.prioritize = false;
-      break;
-    case '--output':
-      options.outputFile = args[++i];
-      break;
-    case '--max-errors':
-      const maxErrorsArg = args[++i];
-      if (maxErrorsArg) {
-        options.maxErrors = parseInt(maxErrorsArg, 10);
-      }
-      break;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Error log analysis complete!\n");
+    if (options.outputFile) {
+      console.log(`📄 Full report: ${options.outputFile}`);
+    }
+    if (options.createIssues) {
+      console.log("📝 GitHub issue drafts created");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the analysis report");
+    console.log("2. Address critical priority errors first");
+    console.log("3. Apply recommended fixes");
+    if (options.createIssues) {
+      console.log("4. Review and submit GitHub issues");
+    }
   }
-}
-
-// Run the detective
-analyzeErrorLogs(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

@@ -206,7 +206,9 @@ console.log(`Model: ${options.model}`);
 console.log(`Apply changes: ${options.applyChanges ? "enabled" : "disabled"}`);
 console.log("");
 
-const claudeSettings: Settings = {};
+const claudeSettings: Settings = {
+
+};
 
 const allowedTools = [
   "Read",
@@ -224,6 +226,7 @@ let completed = 0;
 for (const [index, targetPath] of options.targetPaths.entries()) {
   const prompt = buildPrompt(targetPath, options.applyChanges);
   const defaultFlags: ClaudeFlags = {
+    print: true,
     model: options.model,
     settings: JSON.stringify(claudeSettings),
     allowedTools: allowedTools.join(" "),

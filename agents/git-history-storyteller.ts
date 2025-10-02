@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Git History Storyteller Agent
@@ -13,45 +13,157 @@
  *
  * Usage:
  *   bun run agents/git-history-storyteller.ts [options]
- *   bun run agents/git-history-storyteller.ts --module auth
- *   bun run agents/git-history-storyteller.ts --file src/api/users.ts
- *   bun run agents/git-history-storyteller.ts --since "6 months ago"
+ *
+ * Examples:
+ *   # Generate full codebase history
+ *   bun run agents/git-history-storyteller.ts
+ *
+ *   # Focus on a specific file
+ *   bun run agents/git-history-storyteller.ts --file src/api/auth.ts
+ *
+ *   # Focus on a module with custom time range
+ *   bun run agents/git-history-storyteller.ts --module src/features/billing --since "2 years ago"
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type FocusType = "full" | "module" | "file";
+type OutputFormat = "markdown" | "html";
 
 interface StorytellerOptions {
-  focus?: 'full' | 'module' | 'file';
+  focus: FocusType;
   target?: string;
-  since?: string;
-  outputFormat?: 'markdown' | 'html';
-  outputPath?: string;
-  includeTimeline?: boolean;
-  includeArchitecture?: boolean;
+  since: string;
+  outputFormat: OutputFormat;
+  outputPath: string;
+  includeTimeline: boolean;
+  includeArchitecture: boolean;
 }
 
-async function runGitHistoryStoryteller(options: StorytellerOptions) {
-  const {
-    focus = 'full',
+const DEFAULT_SINCE = "1 year ago";
+const DEFAULT_OUTPUT_PATH = "./HISTORY.md";
+const DEFAULT_OUTPUT_FORMAT: OutputFormat = "markdown";
+
+function printHelp(): void {
+  console.log(`
+📚 Git History Storyteller
+
+Generates narrative documentation from your git history!
+
+Usage:
+  bun run agents/git-history-storyteller.ts [options]
+
+Options:
+  --file <path>          Focus on a specific file's history
+  --module <path>        Focus on a module/directory's history
+  --since <time>         Time range (default: "${DEFAULT_SINCE}")
+  --output <path>        Output file path (default: ${DEFAULT_OUTPUT_PATH})
+  --format <type>        Output format: markdown|html (default: ${DEFAULT_OUTPUT_FORMAT})
+  --no-timeline          Skip timeline visualization
+  --no-architecture      Skip architectural milestones section
+  --help, -h             Show this help message
+
+Examples:
+  # Generate full codebase history
+  bun run agents/git-history-storyteller.ts
+
+  # Focus on a specific file
+  bun run agents/git-history-storyteller.ts --file src/api/auth.ts
+
+  # Focus on a module with custom time range
+  bun run agents/git-history-storyteller.ts --module src/features/billing --since "2 years ago"
+
+  # Custom output location
+  bun run agents/git-history-storyteller.ts --output docs/CODEBASE_EVOLUTION.md
+
+  # Generate recent history only
+  bun run agents/git-history-storyteller.ts --since "3 months ago"
+  `);
+}
+
+function parseOptions(): StorytellerOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  let focus: FocusType = "full";
+  let target: string | undefined;
+
+  const rawFile = values.file;
+  const rawModule = values.module;
+  const rawSince = values.since;
+  const rawOutput = values.output;
+  const rawFormat = values.format;
+
+  if (typeof rawFile === "string" && rawFile.length > 0) {
+    focus = "file";
+    target = resolve(rawFile);
+  } else if (typeof rawModule === "string" && rawModule.length > 0) {
+    focus = "module";
+    target = resolve(rawModule);
+  }
+
+  const since = typeof rawSince === "string" && rawSince.length > 0
+    ? rawSince
+    : DEFAULT_SINCE;
+
+  const outputPath = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_PATH;
+
+  const outputFormat: OutputFormat = typeof rawFormat === "string" && rawFormat.length > 0
+    ? (rawFormat as OutputFormat)
+    : DEFAULT_OUTPUT_FORMAT;
+
+  if (!["markdown", "html"].includes(outputFormat)) {
+    console.error("❌ Error: Invalid format. Must be markdown or html");
+    process.exit(1);
+  }
+
+  const includeTimeline = values["no-timeline"] !== true;
+  const includeArchitecture = values["no-architecture"] !== true;
+
+  // Validate focus options
+  if ((focus === "file" || focus === "module") && !target) {
+    console.error(`❌ Error: --${focus} requires a target path\n`);
+    console.log("Run with --help for usage information");
+    process.exit(1);
+  }
+
+  return {
+    focus,
     target,
-    since = '1 year ago',
-    outputFormat = 'markdown',
-    outputPath = './HISTORY.md',
-    includeTimeline = true,
-    includeArchitecture = true,
+    since,
+    outputFormat,
+    outputPath,
+    includeTimeline,
+    includeArchitecture,
+  };
+}
+
+function buildPrompt(options: StorytellerOptions): string {
+  const {
+    focus,
+    target,
+    since,
+    outputFormat,
+    outputPath,
+    includeTimeline,
+    includeArchitecture,
   } = options;
 
-  console.log('📚 Git History Storyteller Agent\n');
-  console.log(`Focus: ${focus}${target ? ` (${target})` : ''}`);
-  console.log(`Time Range: Since ${since}`);
-  console.log(`Output: ${outputPath}\n`);
-
   const focusDescription =
-    focus === 'file' ? `the specific file: "${target}"` :
-    focus === 'module' ? `the module/directory: "${target}"` :
-    'the entire codebase';
+    focus === "file" ? `the specific file: "${target}"` :
+    focus === "module" ? `the module/directory: "${target}"` :
+    "the entire codebase";
 
-  const prompt = `You are a Git History Storyteller. Your mission is to analyze the git history and create a compelling narrative documentation about the evolution of ${focusDescription}.
+  return `You are a Git History Storyteller. Your mission is to analyze the git history and create a compelling narrative documentation about the evolution of ${focusDescription}.
 
 ## Your Task
 
@@ -145,216 +257,61 @@ Based on the history, provide guidance for new developers:
 - Include specific examples and commit references
 - Format dates consistently (YYYY-MM-DD)
 
-Start by gathering the git history data.`;
+Start by gathering the git history data.`.trim();
+}
 
-  const queryStream = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'acceptEdits', // Auto-accept file writes
-      maxTurns: 30,
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["file", "module", "since", "output", "format", "no-timeline", "no-architecture", "help", "h"] as const;
 
-      // Only allow tools needed for git analysis and documentation
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-        'TodoWrite'
-      ],
-
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any).command || '';
-                    if (command.includes('git log')) {
-                      console.log('📜 Analyzing git history...');
-                    } else if (command.includes('git tag')) {
-                      console.log('🏷️  Identifying version tags...');
-                    }
-                  } else if (input.tool_name === 'Write') {
-                    console.log('✍️  Writing history documentation...');
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ],
-
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`✅ Documentation written to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ]
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  });
-
-  let startTime = Date.now();
-  let storyComplete = false;
-
-  // Stream results
-  for await (const message of queryStream) {
-    switch (message.type) {
-      case 'assistant':
-        // Show assistant progress
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            // Show key parts of the assistant's thinking
-            const text = block.text;
-            if (text.includes('Analysis:') || text.includes('Story:') || text.includes('Found:')) {
-              console.log(`\n💭 ${text.substring(0, 120)}...`);
-            }
-          }
-        }
-        break;
-
-      case 'result':
-        storyComplete = true;
-        const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log('\n' + '='.repeat(60));
-        if (message.subtype === 'success') {
-          console.log('✨ Git History Story Generated!');
-          console.log('='.repeat(60));
-          console.log(`📖 Your history documentation is ready at: ${outputPath}`);
-          console.log(`\n📊 Statistics:`);
-          console.log(`   Time: ${elapsedTime}s`);
-          console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`   Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-          if (message.usage.cache_read_input_tokens) {
-            console.log(`   Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-          }
-
-          console.log('\n💡 Tip: Share this documentation with your team or include it in your onboarding materials!');
-        } else {
-          console.log('❌ Error generating history');
-          console.log('='.repeat(60));
-          console.log(`Error type: ${message.subtype}`);
-        }
-        break;
-
-      case 'system':
-        if (message.subtype === 'init') {
-          console.log('🚀 Initializing Git History Storyteller...');
-          console.log(`   Model: ${message.model}`);
-          console.log(`   Working Directory: ${message.cwd}\n`);
-        }
-        break;
-    }
-  }
-
-  if (!storyComplete) {
-    console.log('\n⚠️  Story generation was interrupted.');
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-📚 Git History Storyteller
-
-Generates narrative documentation from your git history!
-
-Usage:
-  bun run agents/git-history-storyteller.ts [options]
-
-Options:
-  --file <path>          Focus on a specific file's history
-  --module <path>        Focus on a module/directory's history
-  --since <time>         Time range (default: "1 year ago")
-  --output <path>        Output file path (default: ./HISTORY.md)
-  --format <type>        Output format: markdown|html (default: markdown)
-  --no-timeline          Skip timeline visualization
-  --no-architecture      Skip architectural milestones section
-  --help, -h             Show this help message
-
-Examples:
-  # Generate full codebase history
-  bun run agents/git-history-storyteller.ts
-
-  # Focus on a specific file
-  bun run agents/git-history-storyteller.ts --file src/api/auth.ts
-
-  # Focus on a module with custom time range
-  bun run agents/git-history-storyteller.ts --module src/features/billing --since "2 years ago"
-
-  # Custom output location
-  bun run agents/git-history-storyteller.ts --output docs/CODEBASE_EVOLUTION.md
-
-  # Generate recent history only
-  bun run agents/git-history-storyteller.ts --since "3 months ago"
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse options
-const options: StorytellerOptions = {
-  focus: 'full',
-  since: '1 year ago',
-  outputFormat: 'markdown',
-  outputPath: './HISTORY.md',
-  includeTimeline: true,
-  includeArchitecture: true,
+console.log("📚 Git History Storyteller Agent\n");
+console.log(`Focus: ${options.focus}${options.target ? ` (${options.target})` : ""}`);
+console.log(`Time Range: Since ${options.since}`);
+console.log(`Output: ${options.outputPath}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Glob",
+  "Grep",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--file':
-      options.focus = 'file';
-      options.target = args[++i];
-      break;
-    case '--module':
-      options.focus = 'module';
-      options.target = args[++i];
-      break;
-    case '--since':
-      options.since = args[++i];
-      break;
-    case '--output':
-      options.outputPath = args[++i];
-      break;
-    case '--format':
-      options.outputFormat = args[++i] as 'markdown' | 'html';
-      break;
-    case '--no-timeline':
-      options.includeTimeline = false;
-      break;
-    case '--no-architecture':
-      options.includeArchitecture = false;
-      break;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Git History Story Generated!\n");
+    console.log(`📖 Your history documentation is ready at: ${options.outputPath}`);
+    console.log("\n💡 Tip: Share this documentation with your team or include it in your onboarding materials!");
   }
-}
-
-// Validate focus options
-if ((options.focus === 'file' || options.focus === 'module') && !options.target) {
-  console.error(`❌ Error: --${options.focus} requires a target path\n`);
-  console.log('Run with --help for usage information');
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
 }
-
-// Run the storyteller
-runGitHistoryStoryteller(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Interactive Migration Assistant
@@ -11,29 +11,73 @@
  * - Rollback capability on failures
  *
  * Usage:
+ *   bun run agents/migration-assistant.ts <migration-goal> [options]
+ *
+ * Examples:
  *   bun run agents/migration-assistant.ts "Migrate from React 17 to React 18"
  *   bun run agents/migration-assistant.ts "Upgrade Express 4 to Express 5"
  *   bun run agents/migration-assistant.ts "Convert Jest to Vitest"
+ *   bun run agents/migration-assistant.ts "Migrate to TypeScript 5" --strict
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function runMigrationAssistant(migrationGoal: string) {
-  console.log('🔄 Starting Interactive Migration Assistant...\n');
-  console.log(`📋 Migration Goal: ${migrationGoal}\n`);
+interface MigrationOptions {
+  migrationGoal: string;
+  strict: boolean;
+}
 
-  // Generator for streaming user messages (allows for incremental approvals)
-  async function* userMessageStream() {
-    // Initial migration request
-    yield {
-      type: 'user' as const,
-      session_id: '',
-      message: {
-        role: 'user' as const,
-        content: [
-          {
-            type: 'text' as const,
-            text: `You are an Interactive Migration Assistant. Your goal is to help migrate this codebase with the following objective:
+function printHelp(): void {
+  console.log(`
+🔄 Interactive Migration Assistant
+
+Usage:
+  bun run agents/migration-assistant.ts <migration-goal> [options]
+
+Arguments:
+  migration-goal          Description of the migration to perform
+
+Options:
+  --strict                Enable strict mode with conservative changes only
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/migration-assistant.ts "Migrate from React 17 to React 18"
+  bun run agents/migration-assistant.ts "Upgrade Express 4 to Express 5"
+  bun run agents/migration-assistant.ts "Convert Jest to Vitest"
+  bun run agents/migration-assistant.ts "Migrate to TypeScript 5" --strict
+  `);
+}
+
+function parseOptions(): MigrationOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const migrationGoal = positionals[0];
+  if (!migrationGoal) {
+    console.error("❌ Error: Migration goal is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  const strict = values.strict === true;
+
+  return {
+    migrationGoal,
+    strict,
+  };
+}
+
+function buildPrompt(options: MigrationOptions): string {
+  const { migrationGoal, strict } = options;
+
+  return `You are an Interactive Migration Assistant. Your goal is to help migrate this codebase with the following objective:
 
 ${migrationGoal}
 
@@ -75,272 +119,99 @@ Follow this process:
 - If any tests fail, STOP and report the failure
 - Ask for user confirmation before major changes
 - Provide rollback instructions if something goes wrong
-- Be conservative and safe - it's better to take small steps
+- Be conservative and safe - it's better to take small steps${strict ? `
+- STRICT MODE ENABLED: Only make the most conservative changes
+- Avoid any changes that could potentially break existing functionality
+- Prefer manual review over automatic changes when in doubt` : ""}
 
-Start by analyzing the codebase.`
-          }
-        ]
-      },
-      parent_tool_use_id: null
-    };
-  }
-
-  const queryStream = query({
-    prompt: userMessageStream(),
-    options: {
-      model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'default', // Ask for permission on file changes
-      maxTurns: 50,
-      includePartialMessages: true,
-
-      // Hooks for monitoring the migration process
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                // Monitor file edits and warn about risky changes
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Edit' || input.tool_name === 'Write') {
-                    const filePath = (input.tool_input as any).file_path || '';
-
-                    // Warn about critical file changes
-                    if (filePath.includes('package.json') ||
-                        filePath.includes('package-lock.json') ||
-                        filePath.includes('tsconfig.json')) {
-                      console.log(`⚠️  About to modify critical file: ${filePath}`);
-                    }
-                  }
-
-                  // Monitor bash commands for test execution
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any).command || '';
-                    if (command.includes('test') || command.includes('npm test')) {
-                      console.log('🧪 Running tests...');
-                    }
-                  }
-                }
-
-                return {
-                  continue: true
-                };
-              }
-            ]
-          }
-        ],
-
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                // Monitor test results
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any).command || '';
-                    const output = (input.tool_response as any).output || '';
-
-                    if (command.includes('test') || command.includes('npm test')) {
-                      if (output.includes('FAIL') || output.includes('failed')) {
-                        console.log('❌ Tests failed! Migration step may have issues.');
-                      } else if (output.includes('PASS') || output.includes('passed')) {
-                        console.log('✅ Tests passed! Safe to continue.');
-                      }
-                    }
-                  }
-                }
-
-                return {
-                  continue: true
-                };
-              }
-            ]
-          }
-        ],
-
-        Notification: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'Notification') {
-                  console.log(`📢 ${input.title || 'Notification'}: ${input.message}`);
-                }
-                return {
-                  continue: true
-                };
-              }
-            ]
-          }
-        ]
-      },
-
-      // Only allow safe tools initially
-      allowedTools: [
-        'Read',
-        'Glob',
-        'Grep',
-        'Bash',
-        'Edit',
-        'Write',
-        'TodoWrite'
-      ],
-
-      // Custom tool permission handler for extra safety
-      async canUseTool(toolName, input, _context) {
-        // Auto-approve read-only operations
-        if (['Read', 'Glob', 'Grep'].includes(toolName)) {
-          return {
-            behavior: 'allow',
-            updatedInput: input
-          };
-        }
-
-        // Auto-approve TodoWrite for tracking
-        if (toolName === 'TodoWrite') {
-          return {
-            behavior: 'allow',
-            updatedInput: input
-          };
-        }
-
-        // For Bash commands, check if they're safe
-        if (toolName === 'Bash') {
-          const command = (input as any).command || '';
-
-          // Auto-approve safe read-only commands
-          if (command.startsWith('npm test') ||
-              command.startsWith('npm run test') ||
-              command.startsWith('git status') ||
-              command.startsWith('git diff')) {
-            return {
-              behavior: 'allow',
-              updatedInput: input
-            };
-          }
-
-          // Warn about potentially destructive commands
-          if (command.includes('rm -rf') ||
-              command.includes('git reset --hard') ||
-              command.includes('npm install') ||
-              command.includes('npm uninstall')) {
-            console.log(`⚠️  Potentially destructive command: ${command}`);
-          }
-        }
-
-        // Default: let Claude Code's permission system handle it
-        return {
-          behavior: 'allow',
-          updatedInput: input
-        };
-      },
-
-      // Capture stderr for error monitoring
-      stderr: (data: string) => {
-        if (data.trim()) {
-          console.error('⚠️  stderr:', data);
-        }
-      }
-    }
-  });
-
-  // Stream and display results
-  let lastStatus = '';
-  let migrationComplete = false;
-
-  for await (const message of queryStream) {
-    switch (message.type) {
-      case 'assistant':
-        // Display assistant messages with text content
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log('\n💬 Assistant:', block.text, '\n');
-          } else if (block.type === 'tool_use') {
-            const status = `🔧 Using tool: ${block.name}`;
-            if (status !== lastStatus) {
-              console.log(status);
-              lastStatus = status;
-            }
-          }
-        }
-        break;
-
-      case 'user':
-        // Echo user messages (for context in interactive mode)
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log('\n👤 User:', block.text, '\n');
-          }
-        }
-        break;
-
-      case 'result':
-        migrationComplete = true;
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Migration Result');
-        console.log('='.repeat(60));
-
-        if (message.subtype === 'success') {
-          console.log('✅ Status: Success');
-          console.log(`📝 Result: ${message.result}`);
-        } else {
-          console.log('❌ Status: Error');
-          console.log(`❌ Error Type: ${message.subtype}`);
-        }
-
-        console.log(`\n📈 Statistics:`);
-        console.log(`   Turns: ${message.num_turns}`);
-        console.log(`   Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`   Input Tokens: ${message.usage.input_tokens.toLocaleString()}`);
-        console.log(`   Output Tokens: ${message.usage.output_tokens.toLocaleString()}`);
-
-        if (message.permission_denials.length > 0) {
-          console.log(`\n⚠️  Permission Denials: ${message.permission_denials.length}`);
-          for (const denial of message.permission_denials) {
-            console.log(`   - ${denial.tool_name}`);
-          }
-        }
-        break;
-
-      case 'stream_event':
-        // Show real-time updates for text generation
-        if (message.event.type === 'content_block_delta' &&
-            message.event.delta.type === 'text_delta') {
-          process.stdout.write(message.event.delta.text);
-        }
-        break;
-
-      case 'system':
-        if (message.subtype === 'init') {
-          console.log('🚀 System initialized');
-          console.log(`   Model: ${message.model}`);
-          console.log(`   CWD: ${message.cwd}`);
-          console.log(`   Tools: ${message.tools.length}`);
-          console.log(`   Permission Mode: ${message.permissionMode}\n`);
-        }
-        break;
-    }
-  }
-
-  if (!migrationComplete) {
-    console.log('\n⚠️  Migration was interrupted or cancelled.');
-  }
-
-  console.log('\n✨ Migration Assistant session complete.\n');
+Start by analyzing the codebase.`;
 }
 
-// Main execution
-const migrationGoal = process.argv[2];
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["strict", "help", "h"] as const;
 
-if (!migrationGoal) {
-  console.error('❌ Error: Please provide a migration goal.\n');
-  console.log('Usage:');
-  console.log('  bun run agents/migration-assistant.ts "Migrate from React 17 to React 18"');
-  console.log('  bun run agents/migration-assistant.ts "Upgrade Express 4 to Express 5"');
-  console.log('  bun run agents/migration-assistant.ts "Convert Jest to Vitest"\n');
-  process.exit(1);
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
 }
 
-runMigrationAssistant(migrationGoal).catch(error => {
-  console.error('❌ Fatal error:', error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔄 Interactive Migration Assistant\n");
+console.log(`📋 Migration Goal: ${options.migrationGoal}`);
+console.log(`Strict Mode: ${options.strict ? "Enabled" : "Disabled"}`);
+console.log("");
+
+const systemPrompt = buildPrompt(options);
+
+// Build hooks for monitoring migration process
+const hooks = {
+  PreToolUse: [
+    {
+      hooks: [
+        {
+          type: "command" as const,
+          command: `node -e "const input = JSON.parse(process.argv[1]); if (input.tool_name === 'Edit' || input.tool_name === 'Write') { const filePath = input.tool_input?.file_path || ''; if (filePath.includes('package.json') || filePath.includes('package-lock.json') || filePath.includes('tsconfig.json')) { console.log(\\\`⚠️  About to modify critical file: \\\${filePath}\\\`); } } if (input.tool_name === 'Bash') { const command = input.tool_input?.command || ''; if (command.includes('test') || command.includes('npm test')) { console.log('🧪 Running tests...'); } }" -- "$CLAUDE_HOOK_INPUT"`
+        }
+      ]
+    }
+  ],
+  PostToolUse: [
+    {
+      hooks: [
+        {
+          type: "command" as const,
+          command: `node -e "const input = JSON.parse(process.argv[1]); if (input.tool_name === 'Bash') { const command = input.tool_input?.command || ''; const output = input.tool_response?.output || ''; if (command.includes('test') || command.includes('npm test')) { if (output.includes('FAIL') || output.includes('failed')) { console.log('❌ Tests failed! Migration step may have issues.'); } else if (output.includes('PASS') || output.includes('passed')) { console.log('✅ Tests passed! Safe to continue.'); } } }" -- "$CLAUDE_HOOK_INPUT"`
+        }
+      ]
+    }
+  ]
+};
+
+const settings: Settings = {
+  hooks
+};
+
+const allowedTools = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Bash",
+  "Edit",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.strict ? "default" : "acceptEdits",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude("", defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Migration complete!\n");
+    console.log("Next steps:");
+    console.log("1. Review all changes made during migration");
+    console.log("2. Run full test suite to validate");
+    console.log("3. Check for any remaining deprecated patterns");
+    console.log("4. Commit changes incrementally");
+  } else {
+    console.log("\n⚠️  Migration was interrupted or encountered errors.");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

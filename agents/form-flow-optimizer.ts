@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Form Flow Optimizer Agent
@@ -27,30 +27,99 @@
  *   bun run agents/form-flow-optimizer.ts https://example.com/form --report form-analysis.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface FormFlowOptions {
   url: string;
-  steps?: number;
-  reportFile?: string;
-  mobile?: boolean;
+  steps: number;
+  reportFile: string;
+  mobile: boolean;
 }
 
-async function optimizeFormFlow(options: FormFlowOptions) {
-  const {
+const DEFAULT_REPORT_FILE = "form-flow-optimization.md";
+const DEFAULT_STEPS = 1;
+
+function printHelp(): void {
+  console.log(`
+📝 Form Flow Optimizer
+
+Usage:
+  bun run agents/form-flow-optimizer.ts <url> [options]
+
+Arguments:
+  url                     Form URL to analyze
+
+Options:
+  --steps <number>        Expected number of form steps (default: ${DEFAULT_STEPS})
+  --report <file>         Output file (default: ${DEFAULT_REPORT_FILE})
+  --mobile                Simulate mobile device
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/form-flow-optimizer.ts https://example.com/signup
+  bun run agents/form-flow-optimizer.ts https://example.com/checkout --steps 3
+  bun run agents/form-flow-optimizer.ts https://example.com/form --mobile
+  bun run agents/form-flow-optimizer.ts https://example.com/form --report my-analysis.md
+
+Common Issues Detected:
+  - Confusing or missing labels
+  - Poor validation error messages
+  - Excessive required fields
+  - Slow validation response
+  - Bad tab order
+  - Missing password visibility toggle
+  - Fields requiring multiple attempts
+  `);
+}
+
+function parseOptions(): FormFlowOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error("❌ Error: URL is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  try {
+    new URL(url);
+  } catch (error) {
+    console.error("❌ Error: Invalid URL format");
+    process.exit(1);
+  }
+
+  const rawSteps = values.steps;
+  const rawReport = values.report;
+  const mobile = values.mobile === true;
+
+  const steps = typeof rawSteps === "string" && rawSteps.length > 0
+    ? parseInt(rawSteps, 10)
+    : DEFAULT_STEPS;
+
+  const reportFile = typeof rawReport === "string" && rawReport.length > 0
+    ? rawReport
+    : DEFAULT_REPORT_FILE;
+
+  return {
     url,
-    steps = 1,
-    reportFile = 'form-flow-optimization.md',
-    mobile = false,
-  } = options;
+    steps,
+    reportFile,
+    mobile,
+  };
+}
 
-  console.log('📝 Form Flow Optimizer\n');
-  console.log(`URL: ${url}`);
-  console.log(`Expected Steps: ${steps}`);
-  if (mobile) console.log('Device: Mobile simulation');
-  console.log('');
+function buildPrompt(options: FormFlowOptions): string {
+  const { url, steps, reportFile, mobile } = options;
 
-  const prompt = `
+  return `
 You are a conversion rate optimization expert using Chrome DevTools MCP to analyze and optimize form flows.
 
 Target URL: ${url}
@@ -208,194 +277,83 @@ ${mobile ? '- [List of mobile-specific issues]' : 'N/A - Desktop only analysis'}
 3. Monitor conversion rate changes
 4. Re-run analysis after changes
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: {
-        'chrome-devtools': {
-          type: 'stdio',
-          command: 'npx',
-          args: ['chrome-devtools-mcp@latest', '--isolated'],
-        },
-      },
-      allowedTools: [
-        'mcp__chrome-devtools__navigate_page',
-        'mcp__chrome-devtools__new_page',
-        'mcp__chrome-devtools__take_snapshot',
-        'mcp__chrome-devtools__take_screenshot',
-        'mcp__chrome-devtools__evaluate_script',
-        'mcp__chrome-devtools__fill',
-        'mcp__chrome-devtools__fill_form',
-        'mcp__chrome-devtools__click',
-        'mcp__chrome-devtools__resize_page',
-        'mcp__chrome-devtools__list_network_requests',
-        'mcp__chrome-devtools__wait_for',
-        'Write',
-        'TodoWrite',
-      ],
-      permissionMode: 'default',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__fill_form') {
-                    console.log('📝 Filling form fields...');
-                  } else if (toolName === 'mcp__chrome-devtools__click') {
-                    console.log('🖱️  Interacting with form...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('📸 Capturing form state...');
-                  } else if (toolName === 'mcp__chrome-devtools__list_network_requests') {
-                    console.log('🌐 Analyzing network activity...');
-                  } else if (toolName === 'Write') {
-                    console.log(`💾 Generating report: ${reportFile}`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Form analysis complete');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Form flow optimization complete!');
-                console.log(`\n📄 Full report: ${reportFile}`);
-                console.log('\nNext steps:');
-                console.log('1. Review friction points');
-                console.log('2. Implement quick wins');
-                console.log('3. Set up A/B tests');
-                console.log('4. Monitor conversion rates');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 40,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["steps", "report", "mobile", "help", "h"] as const;
 
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        const text = textContent.text;
-        if (!text.includes('tool_use') && text.trim().length > 0) {
-          console.log('\n💡', text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Analysis Statistics');
-        console.log('='.repeat(60));
-        console.log(`\nDuration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-        if (message.result) {
-          console.log('\n' + '='.repeat(60));
-          console.log('📝 Summary');
-          console.log('='.repeat(60));
-          console.log('\n' + message.result);
-        }
-      } else {
-        console.error('\n❌ Error:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help')) {
-  console.log(`
-📝 Form Flow Optimizer
-
-Usage:
-  bun run agents/form-flow-optimizer.ts <url> [options]
-
-Arguments:
-  url                     Form URL to analyze
-
-Options:
-  --steps <number>        Expected number of form steps (default: 1)
-  --report <file>         Output file (default: form-flow-optimization.md)
-  --mobile                Simulate mobile device
-  --help                  Show this help
-
-Examples:
-  bun run agents/form-flow-optimizer.ts https://example.com/signup
-  bun run agents/form-flow-optimizer.ts https://example.com/checkout --steps 3
-  bun run agents/form-flow-optimizer.ts https://example.com/form --mobile
-  bun run agents/form-flow-optimizer.ts https://example.com/form --report my-analysis.md
-
-Common Issues Detected:
-  - Confusing or missing labels
-  - Poor validation error messages
-  - Excessive required fields
-  - Slow validation response
-  - Bad tab order
-  - Missing password visibility toggle
-  - Fields requiring multiple attempts
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-const url = args[0];
-if (!url) {
-  console.error('❌ Error: URL is required');
-  process.exit(1);
-}
+console.log("📝 Form Flow Optimizer\n");
+console.log(`URL: ${options.url}`);
+console.log(`Expected Steps: ${options.steps}`);
+if (options.mobile) console.log("Device: Mobile simulation");
+console.log(`Report: ${options.reportFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "mcp__chrome-devtools__navigate_page",
+  "mcp__chrome-devtools__new_page",
+  "mcp__chrome-devtools__take_snapshot",
+  "mcp__chrome-devtools__take_screenshot",
+  "mcp__chrome-devtools__evaluate_script",
+  "mcp__chrome-devtools__fill",
+  "mcp__chrome-devtools__fill_form",
+  "mcp__chrome-devtools__click",
+  "mcp__chrome-devtools__resize_page",
+  "mcp__chrome-devtools__list_network_requests",
+  "mcp__chrome-devtools__wait_for",
+  "Write",
+  "TodoWrite",
+];
+
+const mcpConfig = {
+  mcpServers: {
+    "chrome-devtools": {
+      command: "npx",
+      args: ["chrome-devtools-mcp@latest", "--isolated"],
+    },
+  },
+};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  'mcp-config': JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "default",
+  'strict-mcp-config': true,
+};
 
 try {
-  new URL(url);
-} catch (error) {
-  console.error('❌ Error: Invalid URL format');
-  process.exit(1);
-}
-
-const options: FormFlowOptions = { url };
-
-for (let i = 1; i < args.length; i++) {
-  switch (args[i]) {
-    case '--steps':
-      options.steps = parseInt(args[++i] || '1', 10);
-      break;
-    case '--report':
-      options.reportFile = args[++i];
-      break;
-    case '--mobile':
-      options.mobile = true;
-      break;
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Form flow optimization complete!\n");
+    console.log(`📄 Full report: ${options.reportFile}`);
+    console.log("\nNext steps:");
+    console.log("1. Review friction points");
+    console.log("2. Implement quick wins");
+    console.log("3. Set up A/B tests");
+    console.log("4. Monitor conversion rates");
   }
-}
-
-optimizeFormFlow(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}
