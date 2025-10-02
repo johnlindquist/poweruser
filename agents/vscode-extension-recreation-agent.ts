@@ -126,14 +126,16 @@ Deliverable: A concise but comprehensive reverse-engineering plan enabling a dev
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any)?.command ?? '';
-                  if (command.includes('unzip') || command.includes('tar')) {
-                    console.log('🧷 Extracting extension archive...');
+                if (input.hook_event_name === 'PreToolUse') {
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any)?.command ?? '';
+                    if (command.includes('unzip') || command.includes('tar')) {
+                      console.log('🧷 Extracting extension archive...');
+                    }
                   }
-                }
-                if (input.tool_name === 'Write') {
-                  console.log('📝 Compiling reverse-engineering report...');
+                  if (input.tool_name === 'Write') {
+                    console.log('📝 Compiling reverse-engineering report...');
+                  }
                 }
                 return { continue: true };
               },
@@ -233,14 +235,18 @@ Examples:
       case '--vsix':
         vsixPath = args[++i];
         break;
-      case '--output':
-        outputFile = args[++i] ?? outputFile;
+      case '--output': {
+        const outputArg = args[++i];
+        if (outputArg) {
+          outputFile = outputArg;
+        }
         break;
+      }
       case '--include-browser':
         includeBrowserBundles = true;
         break;
       default:
-        if (arg.startsWith('--')) {
+        if (arg && arg.startsWith('--')) {
           console.warn(`⚠️  Ignoring unknown option: ${arg}`);
         }
         break;

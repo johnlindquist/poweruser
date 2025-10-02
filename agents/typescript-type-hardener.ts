@@ -35,23 +35,23 @@ async function runTypeHardener(options: TypeHardenerOptions) {
   console.log(`🧪 Dry run: ${dryRun}`);
   console.log(`🔁 Max turns: ${maxTurns}\n`);
 
-  const prompt = `You are the "TypeScript Type Hardener" agent. Your job is to run \\\`bun tsc\\\` for the project at ${projectPath}, fix all TypeScript errors, and aggressively replace \\\`any\\\` with precise types.
+  const prompt = `You are the "TypeScript Type Hardener" agent. Your job is to run \`bun tsc\` for the project at ${projectPath}, fix all TypeScript errors, and aggressively replace \`any\` with precise types.
 
 Core workflow:
 1. Baseline type check
-   - Execute \\\`bun tsc\\\` (no emit). Capture diagnostics.
+   - Execute \`bun tsc\` (no emit). Capture diagnostics.
    - Summarize errors by file and category.
 2. Remediation loop
    - For each error, inspect the relevant files.
    - Propose type-safe fixes: infer explicit interfaces, generics, discriminated unions, utility types, etc.
    - Prefer additions of types over suppression of errors.
-   - Avoid using \\\`any\\\`; use unknown, generics, or specific types instead. ${allowAny ? 'You may leave existing any usage untouched unless required to fix the error.' : 'If an `any` is encountered, replace it with a safer alternative.'}
+   - Avoid using \`any\`; use unknown, generics, or specific types instead. ${allowAny ? 'You may leave existing any usage untouched unless required to fix the error.' : 'If an \\`any\\` is encountered, replace it with a safer alternative.'}
    - Consider refactors (function signatures, helper utilities) when necessary.
 3. Validation
-   - Re-run \\\`bun tsc\\\` after applying fixes to ensure a clean bill of health.
+   - Re-run \`bun tsc\` after applying fixes to ensure a clean bill of health.
    - Repeat until the compilation exits successfully or no additional progress can be made.
 4. Reporting
-   - Provide a concise summary of modifications, highlighting removed `any` instances.
+   - Provide a concise summary of modifications, highlighting removed \`any\` instances.
    - If dry-run mode is enabled, stage the proposed diffs in memory and write a report instead of modifying files.
 
 Tools & guidelines:
@@ -61,10 +61,10 @@ Tools & guidelines:
 - When a refactor is risky, leave TODO comments explaining remaining work.
 - Always re-run type checking after edits to confirm the fix.
 - Capture stderr/stdout of failing commands and explain remediation steps.
-- If no errors remain but `any` persists (and allow-any is false), proactively search for them (e.g., via \\\`rg 'any'\\\`).
+- If no errors remain but \`any\` persists (and allow-any is false), proactively search for them (e.g., via \`rg 'any'\`).
 - Do not install new dependencies without evidence they are required for typing.
 
-Deliverable: Type-safe source code with zero TypeScript errors and minimized `any` usage, plus a summary of the changes performed.`;
+Deliverable: Type-safe source code with zero TypeScript errors and minimized \`any\` usage, plus a summary of the changes performed.`;
 
   const result = query({
     prompt,
@@ -100,7 +100,7 @@ Deliverable: Type-safe source code with zero TypeScript errors and minimized `an
           model: 'haiku',
         },
       },
-      permissionMode: dryRun ? 'readOnly' : 'acceptEdits',
+      permissionMode: (dryRun ? 'default' : 'acceptEdits') as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
       maxTurns,
       model: 'claude-sonnet-4-5-20250929',
       hooks: {
@@ -108,20 +108,22 @@ Deliverable: Type-safe source code with zero TypeScript errors and minimized `an
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any)?.command ?? '';
-                  if (command.includes('bun tsc')) {
-                    console.log('🧪 Running bun tsc...');
+                if (input.hook_event_name === 'PreToolUse') {
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any)?.command ?? '';
+                    if (command.includes('bun tsc')) {
+                      console.log('🧪 Running bun tsc...');
+                    }
+                    if (command.includes("rg 'any'")) {
+                      console.log('🔍 Auditing lingering any usage...');
+                    }
                   }
-                  if (command.includes("rg 'any'")) {
-                    console.log('🔍 Auditing lingering any usage...');
+                  if (input.tool_name === 'Write' || input.tool_name === 'Edit') {
+                    if (dryRun) {
+                      return { continue: false, reason: 'Dry run active; editing disabled.' };
+                    }
+                    console.log('✍️  Applying type fixes...');
                   }
-                }
-                if (input.tool_name === 'Write' || input.tool_name === 'Edit') {
-                  if (dryRun) {
-                    return { continue: false, reason: 'Dry run active; editing disabled.' };
-                  }
-                  console.log('✍️  Applying type fixes...');
                 }
                 return { continue: true };
               },
@@ -227,7 +229,7 @@ Examples:
         }
         break;
       default:
-        if (arg.startsWith('--')) {
+        if (arg && arg.startsWith('--')) {
           console.warn(`⚠️  Ignoring unknown option: ${arg}`);
         }
         break;

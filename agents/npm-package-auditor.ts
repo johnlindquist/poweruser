@@ -59,15 +59,15 @@ Core expectations:
    - Detect package manager lockfile (package-lock.json, npm-shrinkwrap.json)
    - Note Node.js and npm engine requirements if declared
 2. Baseline dependency map
-   - Use \\`npm ls --all --json\\` to understand the resolved tree
+   - Use \`npm ls --all --json\` to understand the resolved tree
    - Flag duplicate majors, orphaned packages, and peer dependency conflicts
 3. Vulnerability assessment
-   - Run \\`npm audit --json ${includeDev ? '--include=dev' : '--omit=dev'}\\`
+   - Run \`npm audit --json ${includeDev ? '--include=dev' : '--omit=dev'}\`
    - Summarize by severity bands; only include findings at or above ${severity.toUpperCase()}
    - Distinguish between direct and transitive vulnerabilities
    - Capture remediation commands proposed by npm audit
 4. Version freshness check
-   - Run \\`npm outdated\\` to compare installed vs latest versions
+   - Run \`npm outdated\` to compare installed vs latest versions
    - Categorize availability: patch/minor/major and flag risky jumps
 5. ${planFixes ? 'Remediation playbook (dry-run only)' : 'Remediation recommendations'}
    - ${planFixes ? 'Simulate fixes via `npm audit fix --dry-run` and list proposed changes' : 'List safest remediation commands; do not modify lockfiles'}
@@ -131,16 +131,18 @@ ${generateSbom ? '\nSBOM requirement: export npm tree to JSON and include digest
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any)?.command ?? '';
-                  if (command.includes('npm audit')) {
-                    console.log('🔎 Running npm audit...');
-                  }
-                  if (command.includes('npm outdated')) {
-                    console.log('🗒️  Checking outdated packages...');
-                  }
-                  if (command.includes('npm ls')) {
-                    console.log('🌳 Mapping dependency tree...');
+                if (input.hook_event_name === 'PreToolUse') {
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any)?.command ?? '';
+                    if (command.includes('npm audit')) {
+                      console.log('🔎 Running npm audit...');
+                    }
+                    if (command.includes('npm outdated')) {
+                      console.log('🗒️  Checking outdated packages...');
+                    }
+                    if (command.includes('npm ls')) {
+                      console.log('🌳 Mapping dependency tree...');
+                    }
                   }
                 }
                 return { continue: true };
@@ -257,7 +259,7 @@ Examples:
         }
         break;
       default:
-        if (arg.startsWith('--')) {
+        if (arg && arg.startsWith('--')) {
           console.warn(`⚠️  Ignoring unknown option: ${arg}`);
         }
         break;

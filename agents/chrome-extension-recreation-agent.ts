@@ -126,14 +126,16 @@ Deliverable: A concise yet actionable reverse-engineering plan enabling a develo
           {
             hooks: [
               async (input) => {
-                if (input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any)?.command ?? '';
-                  if (command.includes('unzip') || command.includes('.crx')) {
-                    console.log('📦 Extracting extension payload...');
+                if (input.hook_event_name === 'PreToolUse') {
+                  if (input.tool_name === 'Bash') {
+                    const command = (input.tool_input as any)?.command ?? '';
+                    if (command.includes('unzip') || command.includes('.crx')) {
+                      console.log('📦 Extracting extension payload...');
+                    }
                   }
-                }
-                if (input.tool_name === 'Write') {
-                  console.log('📝 Assembling recreation blueprint...');
+                  if (input.tool_name === 'Write') {
+                    console.log('📝 Assembling recreation blueprint...');
+                  }
                 }
                 return { continue: true };
               },
@@ -233,14 +235,18 @@ Examples:
       case '--crx':
         crxPath = args[++i];
         break;
-      case '--output':
-        outputFile = args[++i] ?? outputFile;
+      case '--output': {
+        const outputArg = args[++i];
+        if (outputArg) {
+          outputFile = outputArg;
+        }
         break;
+      }
       case '--include-assets':
         includeAssets = true;
         break;
       default:
-        if (arg.startsWith('--')) {
+        if (arg && arg.startsWith('--')) {
           console.warn(`⚠️  Ignoring unknown option: ${arg}`);
         }
         break;
