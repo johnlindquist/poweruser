@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * API Documentation Sync Checker Agent
@@ -12,32 +12,88 @@
  * - Generates updated documentation snippets ready to paste into your docs
  * - Creates a sync report with severity levels (critical: undocumented endpoint, minor: outdated description)
  * - Perfect for preventing documentation drift and maintaining accurate API contracts
+ *
+ * Usage:
+ *   bun run agents/api-documentation-sync-checker.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Check current directory
+ *   bun run agents/api-documentation-sync-checker.ts
+ *
+ *   # Check specific project
+ *   bun run agents/api-documentation-sync-checker.ts ./my-api
+ *
+ *   # Auto-update docs
+ *   bun run agents/api-documentation-sync-checker.ts --auto-update
+ *
+ *   # Custom output file
+ *   bun run agents/api-documentation-sync-checker.ts --output my-report.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const { values, positionals } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    'auto-update': { type: 'boolean', default: false },
-    output: { type: 'string', default: 'api-sync-report.md' },
-  },
-  allowPositionals: true,
-});
+interface ApiDocSyncOptions {
+  projectPath: string;
+  autoUpdate: boolean;
+  outputFile: string;
+}
 
-const PROJECT_PATH = positionals[0] || process.cwd();
-const AUTO_UPDATE = values['auto-update'] as boolean;
-const OUTPUT_FILE = values.output as string;
+const DEFAULT_OUTPUT_FILE = "api-sync-report.md";
 
-async function main() {
-  console.log('📚 API Documentation Sync Checker');
-  console.log(`📁 Scanning project: ${PROJECT_PATH}`);
-  console.log(`📄 Output file: ${OUTPUT_FILE}`);
-  if (AUTO_UPDATE) {
-    console.log('✏️  Will automatically update documentation');
+function printHelp(): void {
+  console.log(`
+📚 API Documentation Sync Checker
+
+Usage:
+  bun run agents/api-documentation-sync-checker.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project (default: current directory)
+
+Options:
+  --auto-update           Automatically update documentation files
+  --output <file>         Output file (default: ${DEFAULT_OUTPUT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/api-documentation-sync-checker.ts
+  bun run agents/api-documentation-sync-checker.ts ./my-api
+  bun run agents/api-documentation-sync-checker.ts --auto-update
+  bun run agents/api-documentation-sync-checker.ts --output my-report.md
+  `);
+}
+
+function parseOptions(): ApiDocSyncOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
-  console.log();
+
+  const projectPath = positionals[0]
+    ? resolve(positionals[0])
+    : process.cwd();
+
+  const rawOutput = values.output;
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  const autoUpdate = values["auto-update"] === true || values.autoUpdate === true;
+
+  return {
+    projectPath,
+    autoUpdate,
+    outputFile,
+  };
+}
+
+function buildPrompt(options: ApiDocSyncOptions): string {
+  const { projectPath, autoUpdate, outputFile } = options;
 
   const systemPrompt = `You are an API Documentation Sync Checker agent that helps developers keep API documentation in sync with the actual implementation.
 
@@ -81,7 +137,7 @@ Your task is to:
    - For each issue: endpoint, severity, description, suggested fix
    - Ready-to-paste documentation snippets for undocumented endpoints
 
-${AUTO_UPDATE ? '6. Automatically update documentation files with the suggested fixes' : ''}
+${autoUpdate ? '6. Automatically update documentation files with the suggested fixes' : ''}
 
 Use Grep to find routes and docs efficiently, Read to analyze implementations and docs, and Write to generate the report.
 
@@ -92,7 +148,7 @@ IMPORTANT:
 - Generate documentation in the same format as existing docs
 - Prioritize issues by severity for actionability`;
 
-  const prompt = `Scan the API implementation and documentation at: ${PROJECT_PATH}
+  const prompt = `Scan the API implementation and documentation at: ${projectPath}
 
 1. First, identify the project type and framework:
    - Use Glob to find package.json, requirements.txt, pom.xml, etc.
@@ -131,7 +187,7 @@ IMPORTANT:
      * WARNING: Outdated parameter description, missing response example, type mismatch
      * INFO: Minor formatting differences, missing optional details
 
-5. Generate a markdown report saved as '${OUTPUT_FILE}' with:
+5. Generate a markdown report saved as '${outputFile}' with:
 
    # API Documentation Sync Report
 
@@ -180,7 +236,7 @@ IMPORTANT:
    - Suggestions for maintaining sync going forward
    - Consider adding automated API doc generation
 
-${AUTO_UPDATE ? `
+${autoUpdate ? `
 6. After generating the report, update the documentation:
    - For OpenAPI/Swagger specs, add missing endpoints
    - Update README or API.md with new endpoints
@@ -190,57 +246,77 @@ ${AUTO_UPDATE ? `
 
 Start by identifying the framework and endpoint patterns, then systematically compare code vs docs.`;
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Glob',
-          'Grep',
-          'Read',
-          'Write',
-          'Edit'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+  return systemPrompt + '\n\n' + prompt;
+}
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ API documentation sync check complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["auto-update", "autoUpdate", "output", "help", "h"] as const;
 
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Report saved to: ${OUTPUT_FILE}`);
-
-          if (!AUTO_UPDATE) {
-            console.log('💡 Run with --auto-update to automatically update documentation files');
-          }
-        } else {
-          console.error('\n❌ API sync check failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running API documentation sync checker:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("📚 API Documentation Sync Checker\n");
+console.log(`📁 Project: ${options.projectPath}`);
+console.log(`📄 Output: ${options.outputFile}`);
+console.log(`Auto-update: ${options.autoUpdate ? "Enabled" : "Disabled"}`);
+console.log("");
+
+// Change to project directory if needed
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Write",
+  ...(options.autoUpdate ? ["Edit"] : []),
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoUpdate ? "acceptEdits" : "bypassPermissions",
+  ...(options.autoUpdate ? { 'dangerously-skip-permissions': true } : {}),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ API documentation sync check complete!\n");
+    console.log(`📄 Report saved to: ${options.outputFile}`);
+    if (options.autoUpdate) {
+      console.log("✏️  Documentation updates applied - review before committing");
+    } else {
+      console.log("💡 Run with --auto-update to automatically update documentation files");
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+} finally {
+  // Restore original directory
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+}

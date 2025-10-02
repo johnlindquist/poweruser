@@ -82,6 +82,14 @@ You are a migration assistant tasked with updating an existing Claude agent to m
 
 Target agent: ${targetPath}
 
+**IMPORTANT PRELIMINARY STEPS:**
+Before proposing any changes, you MUST:
+1. Read the target agent file to understand its current structure
+2. Read ./agents/accessibility-audit-healer.ts as the reference implementation
+3. Read ./agents/lib/index.ts to see all available exports
+4. Read ./agents/lib/settings.ts to understand the Settings type schema
+5. Read ./agents/lib/claude-flags.types.ts to understand ClaudeFlags interface
+
 Focus on these upgrades:
 1. Replace direct SDK usage with the shared helpers in ./agents/lib (claude wrapper, parsedArgs, getPositionals, Settings, etc.).
 2. Standardize CLI handling:
@@ -89,19 +97,33 @@ Focus on these upgrades:
    - Provide a clear help printer and validation similar to accessibility-audit-healer.
    - Resolve file paths via node:path utilities when needed.
 3. Build default flags the new way:
-   - Serialize CLAUDE settings (cwd, maxTurns, output config) via --settings JSON.
+   - Use Settings type correctly (it does NOT have cwd or maxTurns properties)
+   - Settings is typically an empty object {} unless you need specific config like model, env, etc.
    - Pass MCP server definitions through --mcp-config JSON objects.
-   - Use allowedTools (space-separated) and permission-mode flags for tool access.
+   - Use allowedTools (space-separated string) and permission-mode flags for tool access.
    - Add strict-mcp-config when providing custom MCP servers.
-4. Ensure the script runs at top level (no manual run() wrapper) and awaits claude directly.
-5. Preserve existing agent-specific logic (prompts, logging, domain-specific behavior) while reorganizing structure.
-6. Update imports, types, and completion messages to match the style of agents/accessibility-audit-healer.ts.
-7. If the agent writes reports or files, maintain that behavior but route configuration through the new settings style.
+4. Handle working directory:
+   - IMPORTANT: Settings does NOT support a 'cwd' property
+   - If you need to change working directory, use process.chdir() before calling claude()
+   - Store the original cwd if you need to restore it later
+5. Ensure the script runs at top level (no manual run() wrapper) and awaits claude directly.
+6. Preserve existing agent-specific logic (prompts, logging, domain-specific behavior) while reorganizing structure.
+7. Update imports, types, and completion messages to match the style of agents/accessibility-audit-healer.ts.
+8. System prompts should use the 'append-system-prompt' flag instead of inline systemPrompt option.
 
 Migration checklist:
 - Keep the shebang as \`#!/usr/bin/env -S bun run\`.
-- Ensure any new helpers (e.g., Settings type) are imported from ./lib as needed.
-- Remove redundant flag parsing or spawn logic replaced by the shared claude() helper.
+- Import { claude, parsedArgs } from "./lib" and types from "./lib".
+- Remove import from '@anthropic-ai/claude-agent-sdk'.
+- Remove import from 'util' parseArgs (use parsedArgs from lib instead).
+- Add proper TypeScript interfaces for options.
+- Create Settings object (usually empty {}).
+- NEVER add cwd or maxTurns to Settings - these properties don't exist on that type.
+- Use process.chdir() if you need to change working directory.
+- Build ClaudeFlags with model, settings (JSON string), allowedTools (space-separated), permission-mode, etc.
+- Add removeAgentFlags() function to clean up agent-specific flags from parsedArgs.
+- Replace query() loop with await claude(prompt, defaultFlags).
+- Remove main() wrapper, run at top level.
 - Confirm CLI help text is accurate after the migration.
 
 ${applyChanges ? "Apply the necessary edits directly using the Edit tool and save the file when ready." : "Propose the full diff and wait for approval before applying edits."}
@@ -134,10 +156,7 @@ console.log("");
 
 const prompt = buildPrompt(options);
 
-const claudeSettings: Settings = {
-  cwd: process.cwd(),
-  maxTurns: 40,
-};
+const claudeSettings: Settings = {};
 
 const allowedTools = [
   "Read",

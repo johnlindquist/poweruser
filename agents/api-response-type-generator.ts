@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * API Response Type Generator Agent
@@ -11,54 +11,100 @@
  * - Generates Zod schemas for runtime validation alongside TypeScript types
  * - Creates mock data factories for testing based on actual API response shapes
  * - Organizes types by API endpoint with clear naming conventions
+ *
+ * Usage:
+ *   bun run agents/api-response-type-generator.ts <api-endpoint> [output-file] [options]
+ *
+ * Examples:
+ *   # Basic type generation
+ *   bun run agents/api-response-type-generator.ts https://api.github.com/users/octocat
+ *
+ *   # Generate with Zod schemas
+ *   bun run agents/api-response-type-generator.ts https://jsonplaceholder.typicode.com/posts types/api.ts --zod
+ *
+ *   # Generate with Zod and mocks
+ *   bun run agents/api-response-type-generator.ts https://api.example.com/data types/api.ts --zod --mocks
+ *
+ *   # Check for API changes
+ *   bun run agents/api-response-type-generator.ts https://api.example.com/data types/api.ts --check-changes
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const API_ENDPOINT = process.argv[2];
-const OUTPUT_FILE = process.argv[3] || 'generated-types.ts';
-const GENERATE_ZOD = process.argv.includes('--zod');
-const GENERATE_MOCKS = process.argv.includes('--mocks');
-const CHECK_EXISTING = process.argv.includes('--check-changes');
+interface ApiTypeGeneratorOptions {
+  apiEndpoint: string;
+  outputFile: string;
+  generateZod: boolean;
+  generateMocks: boolean;
+  checkChanges: boolean;
+}
 
-function printUsage() {
+const DEFAULT_OUTPUT_FILE = "generated-types.ts";
+
+function printHelp(): void {
   console.log(`
 🎯 API Response Type Generator
 
 Usage:
-  bun agents/api-response-type-generator.ts <api-endpoint> [output-file] [options]
+  bun run agents/api-response-type-generator.ts <api-endpoint> [output-file] [options]
 
 Arguments:
   api-endpoint    The API URL to fetch and generate types from (required)
-  output-file     Output TypeScript file path (default: generated-types.ts)
+  output-file     Output TypeScript file path (default: ${DEFAULT_OUTPUT_FILE})
 
 Options:
   --zod           Generate Zod schemas alongside TypeScript types
   --mocks         Generate mock data factories for testing
   --check-changes Compare with existing types and show migration guide
+  --help, -h      Show this help
 
 Examples:
-  bun agents/api-response-type-generator.ts https://api.github.com/users/octocat
-  bun agents/api-response-type-generator.ts https://jsonplaceholder.typicode.com/posts types/api.ts --zod --mocks
-  bun agents/api-response-type-generator.ts https://api.example.com/data types/api.ts --check-changes
-`);
+  bun run agents/api-response-type-generator.ts https://api.github.com/users/octocat
+  bun run agents/api-response-type-generator.ts https://jsonplaceholder.typicode.com/posts types/api.ts --zod --mocks
+  bun run agents/api-response-type-generator.ts https://api.example.com/data types/api.ts --check-changes
+  `);
 }
 
-async function main() {
-  if (!API_ENDPOINT || API_ENDPOINT === '--help' || API_ENDPOINT === '-h') {
-    printUsage();
-    process.exit(API_ENDPOINT ? 0 : 1);
+function parseOptions(): ApiTypeGeneratorOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
 
-  console.log('🎯 API Response Type Generator');
-  console.log(`🔗 API Endpoint: ${API_ENDPOINT}`);
-  console.log(`📄 Output file: ${OUTPUT_FILE}`);
-  if (GENERATE_ZOD) console.log('✨ Generating Zod schemas');
-  if (GENERATE_MOCKS) console.log('🎭 Generating mock factories');
-  if (CHECK_EXISTING) console.log('🔍 Checking for schema changes');
-  console.log();
+  const apiEndpoint = positionals[0];
+  if (!apiEndpoint) {
+    console.error("❌ Error: API endpoint is required");
+    printHelp();
+    process.exit(1);
+  }
 
-  const systemPrompt = `You are an API Response Type Generator agent that helps developers automatically create TypeScript types from API responses.
+  try {
+    new URL(apiEndpoint);
+  } catch (error) {
+    console.error("❌ Error: Invalid API endpoint URL format");
+    process.exit(1);
+  }
+
+  const outputFile = positionals[1] || DEFAULT_OUTPUT_FILE;
+  const generateZod = values.zod === true;
+  const generateMocks = values.mocks === true;
+  const checkChanges = values["check-changes"] === true || values.checkChanges === true;
+
+  return {
+    apiEndpoint,
+    outputFile,
+    generateZod,
+    generateMocks,
+    checkChanges,
+  };
+}
+
+function buildSystemPrompt(_options: ApiTypeGeneratorOptions): string {
+  return `You are an API Response Type Generator agent that helps developers automatically create TypeScript types from API responses.
 
 Your task is to:
 1. Fetch the API response from the provided endpoint
@@ -107,11 +153,15 @@ IMPORTANT:
 - Generate production-ready, properly formatted TypeScript code
 - Use Write tool to save the generated types
 - Handle errors gracefully (network issues, invalid JSON, etc.)`;
+}
 
-  const prompt = `Fetch the API endpoint and generate TypeScript types.
+function buildPrompt(options: ApiTypeGeneratorOptions): string {
+  const { apiEndpoint, outputFile, generateZod, generateMocks, checkChanges } = options;
+
+  return `Fetch the API endpoint and generate TypeScript types.
 
 1. Fetch the API response:
-   - Use WebFetch to call: ${API_ENDPOINT}
+   - Use WebFetch to call: ${apiEndpoint}
    - Prompt: "Return the raw JSON response data"
    - Handle authentication errors, rate limits, or network issues
    - If the response is an array, analyze the first few items
@@ -128,9 +178,9 @@ IMPORTANT:
    - If path has multiple segments, use the resource name
    - Use PascalCase convention
 
-${CHECK_EXISTING ? `
+${checkChanges ? `
 4. Check for existing types:
-   - Read the file: ${OUTPUT_FILE}
+   - Read the file: ${outputFile}
    - If it exists, parse the existing interfaces
    - Compare field by field with new structure
    - Identify:
@@ -140,19 +190,19 @@ ${CHECK_EXISTING ? `
      * Optional→Required changes (breaking)
 ` : ''}
 
-${CHECK_EXISTING ? '5' : '4'}. Generate the TypeScript file with:
+${checkChanges ? '5' : '4'}. Generate the TypeScript file with:
 
 \`\`\`typescript
 /**
- * Generated types for ${API_ENDPOINT}
+ * Generated types for ${apiEndpoint}
  * Generated on: ${new Date().toISOString()}
  *
-${CHECK_EXISTING ? ` * MIGRATION GUIDE:
+${checkChanges ? ` * MIGRATION GUIDE:
  * [Include migration notes here if changes detected]
  *
 ` : ''}*/
 
-${GENERATE_ZOD ? "import { z } from 'zod';\n" : ''}
+${generateZod ? "import { z } from 'zod';\n" : ''}
 
 /**
  * [Description of the main interface based on API purpose]
@@ -175,7 +225,7 @@ export interface ArrayItemInterface {
   // ... array element structure
 }
 
-${GENERATE_ZOD ? `
+${generateZod ? `
 // Zod schemas for runtime validation
 
 export const NestedInterfaceSchema = z.object({
@@ -197,7 +247,7 @@ export const InterfaceNameSchema = z.object({
 export type InterfaceNameFromSchema = z.infer<typeof InterfaceNameSchema>;
 ` : ''}
 
-${GENERATE_MOCKS ? `
+${generateMocks ? `
 // Mock data factories for testing
 
 export function mockNestedInterface(): NestedInterface {
@@ -223,65 +273,75 @@ export function mockInterfaceName(): InterfaceName {
 ` : ''}
 \`\`\`
 
-${CHECK_EXISTING ? '6' : '5'}. Save the generated types to: ${OUTPUT_FILE}
+${checkChanges ? '6' : '5'}. Save the generated types to: ${outputFile}
 
 Focus on creating production-ready, well-documented types that developers can use immediately.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        systemPrompt,
-        allowedTools: [
-          'WebFetch',
-          'Read',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["zod", "mocks", "check-changes", "checkChanges", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Type generation complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Types saved to: ${OUTPUT_FILE}`);
-          console.log('\n💡 Tips:');
-          console.log('  - Import the types in your code');
-          if (!GENERATE_ZOD) {
-            console.log('  - Run with --zod to add runtime validation');
-          }
-          if (!GENERATE_MOCKS) {
-            console.log('  - Run with --mocks to generate test fixtures');
-          }
-          if (!CHECK_EXISTING) {
-            console.log('  - Run with --check-changes to detect schema changes');
-          }
-        } else {
-          console.error('\n❌ Type generation failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running type generator:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🎯 API Response Type Generator\n");
+console.log(`🔗 API Endpoint: ${options.apiEndpoint}`);
+console.log(`📄 Output file: ${options.outputFile}`);
+if (options.generateZod) console.log("✨ Generating Zod schemas");
+if (options.generateMocks) console.log("🎭 Generating mock factories");
+if (options.checkChanges) console.log("🔍 Checking for schema changes");
+console.log("");
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "WebFetch",
+  "Read",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Type generation complete!\n");
+    console.log(`📄 Types saved to: ${options.outputFile}`);
+    console.log("\n💡 Tips:");
+    console.log("  - Import the types in your code");
+    if (!options.generateZod) {
+      console.log("  - Run with --zod to add runtime validation");
+    }
+    if (!options.generateMocks) {
+      console.log("  - Run with --mocks to generate test fixtures");
+    }
+    if (!options.checkChanges) {
+      console.log("  - Run with --check-changes to detect schema changes");
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Error running type generator:", error);
+  process.exit(1);
+}

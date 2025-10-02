@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * API Contract Validator
@@ -14,28 +14,68 @@
  * - Catches accidental breaking changes before they hit production
  *
  * Usage:
- *   bun agents/api-contract-validator.ts [path-to-api-files] [--base-branch=main]
+ *   bun run agents/api-contract-validator.ts [path-to-api-files] [options]
  *
- * Example:
- *   bun agents/api-contract-validator.ts src/api
- *   bun agents/api-contract-validator.ts src/routes --base-branch=develop
+ * Examples:
+ *   bun run agents/api-contract-validator.ts src/api
+ *   bun run agents/api-contract-validator.ts src/routes --base-branch develop
+ *   bun run agents/api-contract-validator.ts --help
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { parseArgs } from 'util';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const { values, positionals } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    'base-branch': { type: 'string', default: 'main' },
-  },
-  allowPositionals: true,
-});
+interface ApiContractOptions {
+  apiPath: string;
+  baseBranch: string;
+}
 
-const apiPath = positionals[0] || "src";
-const baseBranch = values['base-branch'] as string;
+const DEFAULT_API_PATH = "src";
+const DEFAULT_BASE_BRANCH = "main";
 
-const systemPrompt = `You are an API Contract Validator agent. Your mission is to prevent breaking API changes by thoroughly analyzing API contracts and their changes.
+function printHelp(): void {
+  console.log(`
+🔍 API Contract Validator
+
+Usage:
+  bun run agents/api-contract-validator.ts [path] [options]
+
+Arguments:
+  path                    Path to API files (default: ${DEFAULT_API_PATH})
+
+Options:
+  --base-branch <name>    Git branch to compare against (default: ${DEFAULT_BASE_BRANCH})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/api-contract-validator.ts src/api
+  bun run agents/api-contract-validator.ts src/routes --base-branch develop
+  `);
+}
+
+function parseOptions(): ApiContractOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const apiPath = positionals[0] || DEFAULT_API_PATH;
+  const rawBaseBranch = values["base-branch"];
+  const baseBranch = typeof rawBaseBranch === "string" && rawBaseBranch.length > 0
+    ? rawBaseBranch
+    : DEFAULT_BASE_BRANCH;
+
+  return {
+    apiPath,
+    baseBranch,
+  };
+}
+
+function buildSystemPrompt(baseBranch: string): string {
+  return `You are an API Contract Validator agent. Your mission is to prevent breaking API changes by thoroughly analyzing API contracts and their changes.
 
 ## Your Responsibilities
 
@@ -128,14 +168,12 @@ Generate a comprehensive report with:
 - For breaking changes, suggest migration strategies
 - Always generate tests that future developers can run
 - Consider both REST APIs and GraphQL/gRPC if present`;
+}
 
-async function main() {
-  console.log("🔍 API Contract Validator");
-  console.log("========================\n");
-  console.log(`Analyzing API contracts in: ${apiPath}`);
-  console.log(`Comparing against branch: ${baseBranch}\n`);
+function buildPrompt(options: ApiContractOptions): string {
+  const { apiPath, baseBranch } = options;
 
-  const userPrompt = `Validate API contracts in the "${apiPath}" directory.
+  return `Validate API contracts in the "${apiPath}" directory.
 
 Compare the current API definitions with the "${baseBranch}" branch to detect any breaking changes.
 
@@ -148,54 +186,66 @@ Steps to follow:
 6. Suggest migration strategies for any breaking changes
 
 Please be thorough and provide actionable insights.`;
+}
 
-  const result = query({
-    prompt: userPrompt,
-    options: {
-      systemPrompt,
-      model: "claude-sonnet-4-5-20250929",
-      allowedTools: [
-        "Glob",
-        "Grep",
-        "Read",
-        "Write",
-        "Edit",
-        "Bash",
-        "TodoWrite"
-      ],
-      permissionMode: "acceptEdits",
-      cwd: process.cwd(),
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["base-branch", "help", "h"] as const;
 
-  // Stream the agent's progress
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      for (const content of message.message.content) {
-        if (content.type === "text") {
-          console.log(content.text);
-        } else if (content.type === "tool_use") {
-          console.log(`\n🔧 Using tool: ${content.name}`);
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n" + "=".repeat(50));
-        console.log("✅ Validation Complete");
-        console.log("=".repeat(50));
-        console.log(message.result);
-        console.log(`\n💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-      } else {
-        console.error("\n❌ Validation failed:", message.subtype);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔍 API Contract Validator\n");
+console.log(`API Path: ${options.apiPath}`);
+console.log(`Base Branch: ${options.baseBranch}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options.baseBranch);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Write",
+  "Edit",
+  "Bash",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ API contract validation complete!\n");
+    console.log("Next steps:");
+    console.log("1. Review the validation report");
+    console.log("2. Address any breaking changes");
+    console.log("3. Update semantic version accordingly");
+    console.log("4. Update API documentation");
+    console.log("5. Run generated contract tests");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

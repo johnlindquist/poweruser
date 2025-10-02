@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Accessibility Audit Helper Agent
@@ -25,30 +25,26 @@
  *   --framework <react|vue|html>  Target framework (default: auto-detect)
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const { values, positionals } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    help: { type: 'boolean', short: 'h', default: false },
-    standard: { type: 'string', default: 'AA' },
-    fix: { type: 'boolean', default: false },
-    output: { type: 'string', default: 'a11y-report.md' },
-    framework: { type: 'string', default: 'auto' },
-  },
-  allowPositionals: true,
-});
+type WcagLevel = "AA" | "AAA";
+type Framework = "react" | "vue" | "html" | "auto";
 
-const PROJECT_PATH = positionals[0] || process.cwd();
+interface AuditOptions {
+  projectPath: string;
+  wcagLevel: WcagLevel;
+  autoFix: boolean;
+  outputFile: string;
+  framework: Framework;
+}
 
-// Parse CLI arguments
-const WCAG_LEVEL = (values.standard as string).toUpperCase();
-const AUTO_FIX = values.fix as boolean;
-const OUTPUT_FILE = values.output as string;
-const FRAMEWORK = (values.framework as string).toLowerCase();
+const DEFAULT_OUTPUT_FILE = "a11y-report.md";
+const DEFAULT_WCAG_LEVEL: WcagLevel = "AA";
+const DEFAULT_FRAMEWORK: Framework = "auto";
 
-if (values.help) {
+function printHelp(): void {
   console.log(`
 🌐 Accessibility Audit Helper
 
@@ -61,10 +57,10 @@ Arguments:
   path                      Project path to audit (default: current directory)
 
 Options:
-  --standard <AA|AAA>       WCAG conformance level (default: AA)
+  --standard <AA|AAA>       WCAG conformance level (default: ${DEFAULT_WCAG_LEVEL})
   --fix                     Automatically apply fixes where possible
-  --output <file>           Output report file (default: a11y-report.md)
-  --framework <react|vue|html>  Target framework (default: auto-detect)
+  --output <file>           Output report file (default: ${DEFAULT_OUTPUT_FILE})
+  --framework <react|vue|html>  Target framework (default: ${DEFAULT_FRAMEWORK})
   --help, -h                Show this help message
 
 Examples:
@@ -80,19 +76,62 @@ Examples:
   # Audit React app with custom output
   bun run agents/accessibility-audit-helper.ts --framework react --output report.md
   `);
-  process.exit(0);
 }
 
-async function main() {
-  console.log('🌐 Accessibility Audit Helper');
-  console.log(`📁 Auditing: ${PROJECT_PATH}`);
-  console.log(`📊 WCAG Level: ${WCAG_LEVEL}`);
-  console.log(`🔧 Auto-fix: ${AUTO_FIX ? 'enabled' : 'disabled'}`);
-  console.log(`📄 Output: ${OUTPUT_FILE}`);
-  console.log(`🎨 Framework: ${FRAMEWORK === 'auto' ? 'auto-detect' : FRAMEWORK}`);
-  console.log();
+function parseOptions(): AuditOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  const systemPrompt = `You are an accessibility audit expert specializing in WCAG ${WCAG_LEVEL} compliance. Your goal is to help developers create inclusive, accessible web applications.
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const projectPath = positionals[0]
+    ? resolve(positionals[0])
+    : process.cwd();
+
+  const rawStandard = values.standard;
+  const wcagLevel = typeof rawStandard === "string" && rawStandard.length > 0
+    ? (rawStandard.toUpperCase() as WcagLevel)
+    : DEFAULT_WCAG_LEVEL;
+
+  if (!(["AA", "AAA"] as const).includes(wcagLevel)) {
+    console.error("❌ Error: Invalid WCAG level. Must be AA or AAA");
+    process.exit(1);
+  }
+
+  const autoFix = values.fix === true;
+
+  const rawOutput = values.output;
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  const rawFramework = values.framework;
+  const framework = typeof rawFramework === "string" && rawFramework.length > 0
+    ? (rawFramework.toLowerCase() as Framework)
+    : DEFAULT_FRAMEWORK;
+
+  const validFrameworks = ["react", "vue", "html", "auto"] as const;
+  if (!validFrameworks.includes(framework)) {
+    console.error("❌ Error: Invalid framework. Must be react, vue, html, or auto");
+    process.exit(1);
+  }
+
+  return {
+    projectPath,
+    wcagLevel,
+    autoFix,
+    outputFile,
+    framework,
+  };
+}
+
+function buildSystemPrompt(options: AuditOptions): string {
+  const { wcagLevel, autoFix, framework } = options;
+
+  return `You are an accessibility audit expert specializing in WCAG ${wcagLevel} compliance. Your goal is to help developers create inclusive, accessible web applications.
 
 Your task is to perform a comprehensive accessibility audit covering:
 
@@ -135,7 +174,7 @@ Your task is to perform a comprehensive accessibility audit covering:
    - No redundant or conflicting ARIA (prefer semantic HTML)
 
 6. **Color & Contrast**
-   - Text contrast ratios (WCAG ${WCAG_LEVEL}: ${WCAG_LEVEL === 'AAA' ? '7:1 for normal text, 4.5:1 for large text' : '4.5:1 for normal text, 3:1 for large text'})
+   - Text contrast ratios (WCAG ${wcagLevel}: ${wcagLevel === 'AAA' ? '7:1 for normal text, 4.5:1 for large text' : '4.5:1 for normal text, 3:1 for large text'})
    - UI component contrast (3:1 minimum for buttons, inputs)
    - Color not used as only means of conveying information
    - Focus indicators have sufficient contrast
@@ -149,7 +188,7 @@ Your task is to perform a comprehensive accessibility audit covering:
 
 8. **Framework-Specific Patterns**
    ${
-     FRAMEWORK === 'react' || FRAMEWORK === 'auto'
+     framework === 'react' || framework === 'auto'
        ? `
    - React: Check for missing keys in lists
    - JSX: Validate accessibility props
@@ -158,7 +197,7 @@ Your task is to perform a comprehensive accessibility audit covering:
        : ''
    }
    ${
-     FRAMEWORK === 'vue' || FRAMEWORK === 'auto'
+     framework === 'vue' || framework === 'auto'
        ? `
    - Vue: v-for keys for list items
    - Vue Router: Announce route changes
@@ -167,7 +206,7 @@ Your task is to perform a comprehensive accessibility audit covering:
    }
 
 ${
-  AUTO_FIX
+  autoFix
     ? `
 AUTOMATIC FIXES:
 When issues can be automatically fixed safely:
@@ -189,8 +228,12 @@ IMPORTANT:
 - Provide specific code examples for fixes
 - Reference WCAG success criteria for each issue
 - Be constructive and educational in tone`;
+}
 
-  const prompt = `Perform a comprehensive accessibility audit on the web application at: ${PROJECT_PATH}
+function buildPrompt(options: AuditOptions): string {
+  const { projectPath, outputFile, autoFix, framework } = options;
+
+  return `Perform a comprehensive accessibility audit on the web application at: ${projectPath}
 
 1. **Detect Framework & File Structure**
    - Use Glob to find component files: *.jsx, *.tsx, *.vue, *.html
@@ -200,7 +243,7 @@ IMPORTANT:
 
 2. **Scan for Common Accessibility Issues**
    ${
-     FRAMEWORK === 'react' || FRAMEWORK === 'auto'
+     framework === 'react' || framework === 'auto'
        ? `
    - Images without alt: Use Grep to find <img without alt attribute
    - Missing form labels: Find input elements without associated labels
@@ -244,11 +287,11 @@ IMPORTANT:
    - Flag uses of color alone for information (red/green without icons)
 
 7. **Generate Detailed Report**
-   Create a markdown report (${OUTPUT_FILE}) with:
+   Create a markdown report (${outputFile}) with:
 
    # Accessibility Audit Report
 
-   **WCAG ${WCAG_LEVEL} Compliance Check**
+   **WCAG ${options.wcagLevel} Compliance Check**
 
    ## Executive Summary
    - Total issues found: X
@@ -275,7 +318,7 @@ IMPORTANT:
    \`\`\`
 
    **Fix**: Add descriptive alt text explaining what the image shows
-   ${AUTO_FIX ? '**Status**: ✅ Auto-fixed' : ''}
+   ${autoFix ? '**Status**: ✅ Auto-fixed' : ''}
 
    ## High Priority Issues 🟠
    [Similar format for high priority issues]
@@ -305,7 +348,7 @@ IMPORTANT:
    4. Set up automated a11y testing in CI/CD
 
 ${
-  AUTO_FIX
+  autoFix
     ? `
 8. **Apply Automatic Fixes**
    For each issue that can be safely auto-fixed:
@@ -318,63 +361,81 @@ ${
 }
 
 Start the audit now. Be thorough but efficient - focus on real issues that impact users.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH.startsWith('/') ? PROJECT_PATH : process.cwd(),
-        systemPrompt,
-        allowedTools: ['Glob', 'Grep', 'Read', 'Write', 'Edit'],
-        permissionMode: AUTO_FIX ? 'acceptEdits' : 'bypassPermissions',
-        model: 'sonnet',
-        maxTurns: 20,
-      },
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["standard", "fix", "output", "framework", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant progress
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Accessibility audit complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(
-            `📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`
-          );
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Detailed report saved to: ${OUTPUT_FILE}`);
-
-          if (!AUTO_FIX) {
-            console.log('💡 Run with --fix to automatically apply fixes where possible');
-          } else {
-            console.log('✅ Automatic fixes have been applied');
-          }
-
-          console.log('\n🌐 For more accessibility resources:');
-          console.log('   - https://www.w3.org/WAI/WCAG21/quickref/');
-          console.log('   - https://webaim.org/resources/');
-          console.log('   - https://www.a11yproject.com/');
-        } else {
-          console.error('\n❌ Accessibility audit failed:', message.subtype);
-          process.exit(1);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running accessibility audit:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🌐 Accessibility Audit Helper\n");
+console.log(`📁 Auditing: ${options.projectPath}`);
+console.log(`📊 WCAG Level: ${options.wcagLevel}`);
+console.log(`🔧 Auto-fix: ${options.autoFix ? 'enabled' : 'disabled'}`);
+console.log(`📄 Output: ${options.outputFile}`);
+console.log(`🎨 Framework: ${options.framework === 'auto' ? 'auto-detect' : options.framework}`);
+console.log();
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+
+// Change to the project directory so relative paths work correctly
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Grep",
+  "Read",
+  "Write",
+  ...(options.autoFix ? ["Edit"] : []),
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoFix ? "acceptEdits" : "bypassPermissions",
+  "append-system-prompt": systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Accessibility audit complete!");
+    console.log(`📄 Detailed report saved to: ${options.outputFile}`);
+
+    if (!options.autoFix) {
+      console.log("💡 Run with --fix to automatically apply fixes where possible");
+    } else {
+      console.log("✅ Automatic fixes have been applied");
+    }
+
+    console.log("\n🌐 For more accessibility resources:");
+    console.log("   - https://www.w3.org/WAI/WCAG21/quickref/");
+    console.log("   - https://webaim.org/resources/");
+    console.log("   - https://www.a11yproject.com/");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Error running accessibility audit:", error);
+  process.exit(1);
+}

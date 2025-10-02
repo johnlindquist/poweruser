@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Agent Architect
@@ -7,42 +7,35 @@
  * Claude Agent SDK TypeScript agent matching this repository's conventions.
  *
  * Usage:
- *   bun run agents/agent-architect.ts [task description] [options]
+ *   bun run agents/agent-architect.ts <task-description> [options]
  *
- * Options:
- *   --spec-file <path>      Path to a file containing the agent brief (overrides positional task text)
- *   --output <path>         Destination .ts file (default: auto-generated in agents/ based on task)
- *   --dry-run               Show planned edits without writing files
- *   --max-turns <number>    Maximum turns for the architect session (default: 28)
- *   --model <id>            Override Claude model (default: claude-sonnet-4-5-20250929)
- *   --help                  Display usage information
+ * Examples:
+ *   # Create an agent using inline brief
+ *   bun run agents/agent-architect.ts "Create a mobile APK rebuild coach"
+ *
+ *   # Supply a detailed spec file and custom output path
+ *   bun run agents/agent-architect.ts "agent brief" --spec-file ./specs/apk-coach.md --output agents/apk-rebuild-coach.ts
+ *
+ *   # Preview proposed changes without writing files
+ *   bun run agents/agent-architect.ts "Document Slack Electron app" --dry-run
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface AgentArchitectOptions {
   task: string;
   specFile?: string;
   outputPath: string;
   dryRun: boolean;
-  maxTurns: number;
   model: string;
 }
 
-async function runAgentArchitect(options: AgentArchitectOptions) {
-  const { task, specFile, outputPath, dryRun, maxTurns, model } = options;
+function buildPrompt(options: AgentArchitectOptions): string {
+  const { task, specFile, outputPath, dryRun } = options;
 
-  console.log('🏗️  Agent Architect booting up...\n');
-  console.log(`🎯 Target task: ${task}`);
-  if (specFile) {
-    console.log(`📄 Spec file: ${specFile}`);
-  }
-  console.log(`📝 Output path: ${outputPath}`);
-  console.log(`🧪 Dry run: ${dryRun}`);
-  console.log(`🧠 Model: ${model}`);
-  console.log(`🔁 Max turns: ${maxTurns}\n`);
-
-  const prompt = `You are the "Agent Architect". Build a new agent according to the brief below.
+  return `You are the "Agent Architect". Build a new agent according to the brief below.
 
 === Agent Brief ===
 ${task}
@@ -71,92 +64,39 @@ Workflow expectations:
 ${dryRun ? '\nDry run active: DO NOT write files. Instead, output a detailed plan and diff preview.' : ''}
 
 Deliverable: a ready-to-run TypeScript agent file implementing the requested functionality.`;
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      allowedTools: [
-        'Read',
-        'Write',
-        'Edit',
-        'Bash',
-        'BashOutput',
-        'Glob',
-        'Grep',
-        'Task',
-      ],
-      permissionMode: (dryRun ? 'default' : 'acceptEdits') as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
-      maxTurns,
-      model,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if ((input.tool_name === 'Write' || input.tool_name === 'Edit') && dryRun) {
-                    return { continue: false, reason: 'Dry run active; skip file modifications.' };
-                  }
-                  if (input.tool_name === 'Write') {
-                    console.log('🛠️  Writing new agent file...');
-                  }
-                  if (input.tool_name === 'Edit') {
-                    console.log('✍️  Updating agent template...');
-                  }
-                  if (input.tool_name === 'Task') {
-                    console.log('🧭 Architect planning steps...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n📐 Agent Architect session complete. Review the generated scaffold.');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+function buildSystemPrompt(options: AgentArchitectOptions): string {
+  const { outputPath, dryRun } = options;
 
-  let success = false;
+  return `You are the Agent Architect meta-agent.
 
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        success = true;
-        console.log('\n✅ Agent creation flow finished successfully.');
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔢 Turns: ${message.num_turns}`);
-        if (message.usage) {
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-        }
-        if (message.result) {
-          console.log(`\n${message.result}`);
-        }
-      } else {
-        console.error('\n❌ Agent architect session failed:', message.subtype);
-      }
+Your role:
+- Create new Claude agents following repository conventions
+- Generate clean, type-safe TypeScript code
+- Follow patterns from existing agents in ./agents
+- Provide clear CLI interfaces with help text
+- Include proper error handling and validation
+
+File to generate: ${outputPath}
+${dryRun ? 'DRY RUN MODE: Show plans and previews only, do not write files.' : ''}
+
+Always:
+- Read existing similar agents for reference
+- Use TodoWrite to track your progress
+- Validate TypeScript syntax
+- Include usage examples in comments
+- Make the agent executable with proper shebang`;
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["spec-file", "specFile", "output", "dry-run", "dryRun", "max-turns", "maxTurns", "model", "help"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  }
-
-  if (!success) {
-    console.warn('\n⚠️  No agent file was confirmed. Inspect logs above for errors.');
   }
 }
 
@@ -171,7 +111,6 @@ Options:
   --spec-file <path>      Path to a file containing the agent brief (overrides positional task text)
   --output <path>         Destination .ts file (default: auto-generated in agents/ based on task)
   --dry-run               Show planned edits without writing files
-  --max-turns <number>    Maximum turns for the architect session (default: 28)
   --model <id>            Override Claude model (default: claude-sonnet-4-5-20250929)
   --help                  Display this help message
 
@@ -187,65 +126,36 @@ Examples:
   `);
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
+function parseOptions(): AgentArchitectOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true;
 
-  if (args.includes('--help') || args.length === 0) {
+  if (help || positionals.length === 0) {
     printHelp();
-    if (args.includes('--help') || args.length === 0) {
-      process.exit(0);
-    }
+    return null;
   }
 
-  let taskParts: string[] = [];
-  let specFile: string | undefined;
-  let outputPath: string | undefined;
-  let dryRun = false;
-  let maxTurns = 28;
-  let model = 'claude-sonnet-4-5-20250929';
+  const rawSpecFile = values["spec-file"] || values.specFile;
+  const rawOutput = values.output;
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
+  const rawModel = values.model;
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '--spec-file':
-        specFile = args[++i];
-        break;
-      case '--output':
-        outputPath = args[++i];
-        break;
-      case '--dry-run':
-        dryRun = true;
-        break;
-      case '--max-turns': {
-        const value = Number(args[++i]);
-        if (!Number.isNaN(value) && value > 0) {
-          maxTurns = value;
-        }
-        break;
-      }
-      case '--model': {
-        const modelArg = args[++i];
-        if (modelArg) {
-          model = modelArg;
-        }
-        break;
-      }
-      default:
-        if (arg && arg.startsWith('--')) {
-          console.warn(`⚠️  Ignoring unknown option: ${arg}`);
-        } else if (arg) {
-          taskParts.push(arg);
-        }
-        break;
-    }
-  }
+  const specFile = typeof rawSpecFile === "string" && rawSpecFile.length > 0
+    ? resolve(rawSpecFile)
+    : undefined;
 
-  let task = taskParts.join(' ').trim();
+  const model = typeof rawModel === "string" && rawModel.length > 0
+    ? rawModel
+    : "claude-sonnet-4-5-20250929";
 
+  // Collect task from positionals
+  let task = positionals.join(" ").trim();
+
+  // If spec file provided, read it
   if (specFile) {
     try {
-      const fs = await import('fs/promises');
-      const spec = await fs.readFile(specFile, 'utf8');
+      const { readFileSync } = require("node:fs");
+      const spec = readFileSync(specFile, "utf8");
       if (spec.trim().length > 0) {
         task = spec.trim();
       }
@@ -256,29 +166,74 @@ if (import.meta.main) {
   }
 
   if (!task) {
-    console.error('❌ No agent brief provided. Supply a task description or use --spec-file.');
+    console.error("❌ No agent brief provided. Supply a task description or use --spec-file.");
     process.exit(1);
   }
 
-  if (!outputPath) {
+  // Determine output path
+  let outputPath: string;
+  if (typeof rawOutput === "string" && rawOutput.length > 0) {
+    outputPath = rawOutput;
+  } else {
     const sanitized = task
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'generated-agent';
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "generated-agent";
     outputPath = `agents/${sanitized}.ts`;
   }
 
-  runAgentArchitect({
+  return {
     task,
     specFile,
     outputPath,
     dryRun,
-    maxTurns,
     model,
-  }).catch((error) => {
-    console.error('❌ Fatal error during Agent Architect run:', error);
-    process.exit(1);
-  });
+  };
 }
 
-export { runAgentArchitect };
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🏗️  Agent Architect\n");
+console.log(`Task: ${options.task.slice(0, 100)}${options.task.length > 100 ? "..." : ""}`);
+if (options.specFile) console.log(`Spec File: ${options.specFile}`);
+console.log(`Output: ${options.outputPath}`);
+console.log(`Dry Run: ${options.dryRun ? "Yes" : "No"}`);
+console.log(`Model: ${options.model}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: options.model,
+  settings: JSON.stringify(settings),
+  "append-system-prompt": systemPrompt,
+  allowedTools: "Bash Read Write Edit Glob Grep Task TodoWrite",
+  "permission-mode": options.dryRun ? "default" : "acceptEdits",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Agent Architect complete!\n");
+    console.log(`📄 Generated agent: ${options.outputPath}`);
+    if (options.dryRun) {
+      console.log("(Dry run - no files written)");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the generated agent code");
+    console.log("2. Make the agent executable: chmod +x " + options.outputPath);
+    console.log("3. Run type checking: bun run typecheck");
+    console.log("4. Test the agent: bun run " + options.outputPath);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}
