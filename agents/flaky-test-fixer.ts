@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Flaky Test Fixer Agent
@@ -11,29 +11,82 @@
  * - Generating a report with reliability metrics
  *
  * Usage:
- *   bun run agents/flaky-test-fixer.ts [test-command] [runs]
+ *   bun run agents/flaky-test-fixer.ts [test-command] [options]
  *
- * Example:
- *   bun run agents/flaky-test-fixer.ts "npm test" 5
- *   bun run agents/flaky-test-fixer.ts "bun test" 10
+ * Examples:
+ *   bun run agents/flaky-test-fixer.ts "npm test"
+ *   bun run agents/flaky-test-fixer.ts "bun test" --runs 10
+ *   bun run agents/flaky-test-fixer.ts "npm test" --runs 5 --auto-fix
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+interface FlakyTestOptions {
+  testCommand: string;
+  numRuns: number;
+  autoFix: boolean;
+}
 
 const DEFAULT_TEST_COMMAND = 'npm test';
 const DEFAULT_RUNS = 5;
 
-async function main() {
-  const testCommand = process.argv[2] || DEFAULT_TEST_COMMAND;
-  const numRuns = parseInt(process.argv[3] || String(DEFAULT_RUNS), 10);
+function printHelp(): void {
+  console.log(`
+🔬 Flaky Test Fixer
 
-  console.log(`🔬 Flaky Test Fixer`);
-  console.log(`   Test command: ${testCommand}`);
-  console.log(`   Number of runs: ${numRuns}`);
-  console.log(`   Working directory: ${process.cwd()}`);
-  console.log();
+Usage:
+  bun run agents/flaky-test-fixer.ts [test-command] [options]
 
-  const prompt = `You are a Flaky Test Fixer agent. Your goal is to identify and fix flaky tests in this codebase.
+Arguments:
+  test-command            Test command to run (default: ${DEFAULT_TEST_COMMAND})
+
+Options:
+  --runs <number>         Number of times to run tests (default: ${DEFAULT_RUNS})
+  --auto-fix              Automatically apply safe fixes to test files
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/flaky-test-fixer.ts "npm test"
+  bun run agents/flaky-test-fixer.ts "bun test" --runs 10
+  bun run agents/flaky-test-fixer.ts "npm test" --runs 5 --auto-fix
+  `);
+}
+
+function parseOptions(): FlakyTestOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const testCommand = positionals[0] || DEFAULT_TEST_COMMAND;
+
+  const rawRuns = values.runs;
+  const numRuns = typeof rawRuns === 'string' && rawRuns.length > 0
+    ? parseInt(rawRuns, 10)
+    : DEFAULT_RUNS;
+
+  if (isNaN(numRuns) || numRuns < 1) {
+    console.error("❌ Error: Invalid number of runs. Must be a positive integer.");
+    process.exit(1);
+  }
+
+  const autoFix = values["auto-fix"] === true || values.autoFix === true;
+
+  return {
+    testCommand,
+    numRuns,
+    autoFix,
+  };
+}
+
+function buildPrompt(options: FlakyTestOptions): string {
+  const { testCommand, numRuns, autoFix } = options;
+
+  return `You are a Flaky Test Fixer agent. Your goal is to identify and fix flaky tests in this codebase.
 
 **Task Breakdown:**
 
@@ -81,45 +134,76 @@ async function main() {
 - Prioritize fixes by impact (most flaky tests first)
 - Explain WHY each test is flaky, not just HOW to fix it
 - If a test is flaky due to the code under test (not the test itself), note that
+${autoFix ? `
+**Auto-fix enabled:** Attempt to fix issues by:
+- Using Edit tool to fix obvious timing/async issues
+- Adding proper waitFor/waitUntil patterns
+- Mocking external dependencies
+- Only make changes to obvious, safe fixes
+- Report all changes made
+` : ""}
+Generate a comprehensive report and suggest fixes.${autoFix ? " Apply automated fixes where safe." : ""}`.trim();
+}
 
-Generate a comprehensive report and suggest fixes. If you can safely apply automated fixes, do so, but always explain what you changed and why.`;
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["runs", "auto-fix", "autoFix", "help", "h"] as const;
 
-  try {
-    let finalResult = '';
-
-    for await (const event of query({
-      prompt,
-      options: {
-        cwd: process.cwd(),
-        model: 'claude-sonnet-4-5',
-        permissionMode: 'acceptEdits',
-      }
-    })) {
-      if (event.type === 'assistant') {
-        // Stream assistant messages as they arrive
-        for (const content of event.message.content) {
-          if (content.type === 'text') {
-            process.stdout.write(content.text);
-          }
-        }
-      } else if (event.type === 'result') {
-        if (event.subtype === 'success') {
-          finalResult = event.result;
-          console.log('\n\n✅ Analysis complete!');
-          console.log(`   Duration: ${(event.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`   Cost: $${event.total_cost_usd.toFixed(4)}`);
-          console.log(`   Turns: ${event.num_turns}`);
-        } else {
-          console.error('\n\n❌ Error:', event.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-
-    return finalResult;
-  } catch (error) {
-    console.error('\n\n❌ Fatal error:', error);
-    process.exit(1);
   }
 }
 
-main().catch(console.error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔬 Flaky Test Fixer\n");
+console.log(`Test command: ${options.testCommand}`);
+console.log(`Number of runs: ${options.numRuns}`);
+console.log(`Auto-fix: ${options.autoFix ? "Enabled" : "Disabled"}`);
+console.log(`Working directory: ${process.cwd()}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Grep",
+  "Glob",
+  "Read",
+  ...(options.autoFix ? ["Edit"] : []),
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoFix ? "acceptEdits" : "default",
+  ...(options.autoFix ? { 'dangerously-skip-permissions': true } : {}),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Flaky test analysis complete!\n");
+    if (options.autoFix) {
+      console.log("🔧 Auto-fixes applied - review before committing");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the analysis and suggested fixes");
+    console.log("2. Apply recommended changes");
+    console.log("3. Re-run tests to verify fixes");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

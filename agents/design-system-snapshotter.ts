@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Design System Snapshotter Agent
@@ -10,15 +10,17 @@
  * Usage:
  *   bun run agents/design-system-snapshotter.ts [options]
  *
- * Options:
- *   --assets <path>       Directory containing design exports (default: ./design)
- *   --output <file>       Markdown report path (default: design-system-rebuild.md)
- *   --limit-components N  Maximum components to deep-dive (default: 20)
- *   --token-files <glob>  Extra glob (comma separated) for token JSON files
- *   --help                Show usage information
+ * Examples:
+ *   # Analyze default ./design directory
+ *   bun run agents/design-system-snapshotter.ts
+ *
+ *   # Point to a download dump and customize token globs
+ *   bun run agents/design-system-snapshotter.ts --assets ../exports --token-files tokens/*.json,legacy/*.yaml
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface DesignSnapshotOptions {
   assetPath: string;
@@ -27,21 +29,82 @@ interface DesignSnapshotOptions {
   tokenGlobs: string[];
 }
 
-async function runDesignSystemSnapshotter(options: DesignSnapshotOptions) {
-  const { assetPath, outputFile, componentLimit, tokenGlobs } = options;
+function printHelp(): void {
+  console.log(`
+🎨 Design System Snapshotter
 
-  console.log('🎨 Design System Snapshotter starting...\n');
-  console.log(`📁 Asset directory: ${assetPath}`);
-  console.log(`🔢 Component deep-dive limit: ${componentLimit}`);
-  console.log(`📄 Token globs: ${tokenGlobs.length ? tokenGlobs.join(', ') : '(default)'}`);
-  console.log(`📝 Report target: ${outputFile}\n`);
+Usage:
+  bun run agents/design-system-snapshotter.ts [options]
 
-  const prompt = `You are the "Design System Snapshotter". Analyze design exports in ${assetPath}.
+Options:
+  --assets <path>       Directory containing design exports (default: ./design)
+  --output <file>       Markdown report path (default: design-system-rebuild.md)
+  --limit-components N  Maximum components to deep dive (default: 20)
+  --token-files <glob>  Additional glob (comma separated) for token JSON files
+  --help, -h            Show this help message
+
+Examples:
+  bun run agents/design-system-snapshotter.ts
+  bun run agents/design-system-snapshotter.ts --assets ../exports
+  bun run agents/design-system-snapshotter.ts --assets ../exports --token-files tokens/*.json,legacy/*.yaml
+  `);
+}
+
+function parseOptions(): DesignSnapshotOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawAssets = values.assets;
+  const assetPath =
+    typeof rawAssets === "string" && rawAssets.length > 0
+      ? resolve(rawAssets)
+      : resolve("./design");
+
+  const rawOutput = values.output;
+  const outputFile =
+    typeof rawOutput === "string" && rawOutput.length > 0
+      ? rawOutput
+      : "design-system-rebuild.md";
+
+  const rawLimit = values["limit-components"] || values.limitComponents;
+  let componentLimit = 20;
+  if (typeof rawLimit === "string") {
+    const parsed = Number(rawLimit);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      componentLimit = parsed;
+    }
+  } else if (typeof rawLimit === "number" && rawLimit > 0) {
+    componentLimit = rawLimit;
+  }
+
+  const rawTokenFiles = values["token-files"] || values.tokenFiles;
+  let tokenGlobs: string[] = [];
+  if (typeof rawTokenFiles === "string" && rawTokenFiles.length > 0) {
+    tokenGlobs = rawTokenFiles.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+
+  return {
+    assetPath,
+    outputFile,
+    componentLimit,
+    tokenGlobs,
+  };
+}
+
+function buildPrompt(options: DesignSnapshotOptions): string {
+  const { outputFile, componentLimit, tokenGlobs } = options;
+
+  return `You are the "Design System Snapshotter". Analyze design exports in the current directory.
 
 Objectives:
 1. Asset inventory
    - Enumerate design artifacts: *.fig, *.sketch, *.xd, exported *.json token files, *.storyboard, *.storybook, *.mdx, icons (svg/png), typography specs.
-   - Honor extra token globs: ${tokenGlobs.join(', ') || 'none supplied'}.
+   - Honor extra token globs: ${tokenGlobs.length > 0 ? tokenGlobs.join(", ") : "none supplied"}.
    - Note large binary files and suggest tooling (e.g. Figma tokens plugin, Sketchtool) required to inspect them.
 2. Component mapping
    - Capture up to ${componentLimit} representative components.
@@ -64,161 +127,83 @@ Objectives:
    - When encountering proprietary formats (.fig, .sketch), catalog them and recommend extraction tools instead of trying to parse binary content directly.
    - Use Bash/Glob/Read/Grep/Write utilities only.
 
-Deliverable: a comprehensive design-system reconstruction blueprint enabling engineers to reproduce the library from the audited assets.`;
+Deliverable: a comprehensive design-system reconstruction blueprint enabling engineers to reproduce the library from the audited assets.`.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: assetPath,
-      allowedTools: ['Glob', 'Read', 'Grep', 'Bash', 'Write', 'Edit', 'BashOutput'],
-      agents: {
-        'asset-cartographer': {
-          description: 'Maps available design artifacts and relevant metadata.',
-          tools: ['Glob', 'Bash', 'Read'],
-          prompt: 'Survey the asset directory, describe discovered files, and note tooling needed to inspect them.',
-          model: 'haiku',
-        },
-        'component-analyst': {
-          description: 'Examines component exports and token usage.',
-          tools: ['Read', 'Grep', 'Bash'],
-          prompt: 'Extract component structures, variant data, and token references from available exports.',
-          model: 'sonnet',
-        },
-        'rebuild-designer': {
-          description: 'Authors the design system rebuild plan and report.',
-          tools: ['Write', 'Edit', 'Read'],
-          prompt: 'Transform findings into a structured markdown guide covering overview, tokens, components, workflows, and rebuilding steps.',
-          model: 'sonnet',
-        },
-      },
-      permissionMode: 'acceptEdits',
-      maxTurns: 26,
-      model: 'claude-sonnet-4-5-20250929',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Write') {
-                    console.log('📝 Compiling design system report...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n📘 Design system snapshot complete. Review the generated blueprint.');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "assets",
+    "output",
+    "limit-components",
+    "limitComponents",
+    "token-files",
+    "tokenFiles",
+    "help",
+    "h",
+  ] as const;
 
-  let reportGenerated = false;
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        reportGenerated = true;
-        console.log('\n✅ Design system analysis complete!');
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔢 Turns: ${message.num_turns}`);
-        if (message.usage) {
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-        }
-      } else {
-        console.error('\n❌ Snapshotter session failed:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  }
-
-  if (!reportGenerated) {
-    console.warn('\n⚠️  No report produced. Inspect agent logs for details.');
   }
 }
 
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-
-  if (args.includes('--help')) {
-    console.log(`
-Design System Snapshotter Agent
-
-Usage:
-  bun run agents/design-system-snapshotter.ts [options]
-
-Options:
-  --assets <path>       Directory containing design exports (default: ./design)
-  --output <file>       Markdown report path (default: design-system-rebuild.md)
-  --limit-components N  Maximum components to deep dive (default: 20)
-  --token-files <glob>  Additional glob (comma separated) for token JSON files
-  --help                Show this help message
-
-Examples:
-  # Analyze default ./design directory
-  bun run agents/design-system-snapshotter.ts
-
-  # Point to a download dump and customize token globs
-  bun run agents/design-system-snapshotter.ts --assets ../exports --token-files tokens/*.json,legacy/*.yaml
-    `);
-    process.exit(0);
-  }
-
-  let assetPath = './design';
-  let outputFile = 'design-system-rebuild.md';
-  let componentLimit = 20;
-  let tokenGlobs: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '--assets':
-        assetPath = args[++i] ?? assetPath;
-        break;
-      case '--output':
-        outputFile = args[++i] ?? outputFile;
-        break;
-      case '--limit-components':
-        {
-          const value = Number(args[++i]);
-          if (!Number.isNaN(value) && value > 0) {
-            componentLimit = value;
-          }
-        }
-        break;
-      case '--token-files': {
-        const tokenArg = args[++i];
-        tokenGlobs = (tokenArg || '').split(',').map((item) => item.trim()).filter(Boolean);
-        break;
-      }
-      default:
-        if (arg && arg.startsWith('--')) {
-          console.warn(`⚠️  Ignoring unknown option: ${arg}`);
-        }
-        break;
-    }
-  }
-
-  runDesignSystemSnapshotter({ assetPath, outputFile, componentLimit, tokenGlobs }).catch((error) => {
-    console.error('❌ Fatal error during design system snapshot:', error);
-    process.exit(1);
-  });
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
 }
 
-export { runDesignSystemSnapshotter };
+console.log("🎨 Design System Snapshotter\n");
+console.log(`📁 Asset directory: ${options.assetPath}`);
+console.log(`🔢 Component deep-dive limit: ${options.componentLimit}`);
+console.log(`📄 Token globs: ${options.tokenGlobs.length ? options.tokenGlobs.join(", ") : "(default)"}`);
+console.log(`📝 Report target: ${options.outputFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Glob",
+  "Read",
+  "Grep",
+  "Bash",
+  "Write",
+  "Edit",
+  "BashOutput",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+};
+
+// Change working directory to asset path
+const originalCwd = process.cwd();
+process.chdir(options.assetPath);
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Design system snapshot complete!\n");
+    console.log("📘 Review the generated blueprint.");
+    console.log("\nNext steps:");
+    console.log("1. Review the design system rebuild plan");
+    console.log("2. Extract tokens using suggested tools");
+    console.log("3. Set up component infrastructure");
+    console.log("4. Implement visual regression testing");
+  }
+  process.chdir(originalCwd);
+  process.exit(exitCode);
+} catch (error) {
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Dream Feature Mapper Agent
@@ -16,37 +16,114 @@
  *   bun run agents/dream-feature-mapper.ts "real-time collaborative editing"
  *   bun run agents/dream-feature-mapper.ts "user authentication with OAuth" --output roadmap.md
  *   bun run agents/dream-feature-mapper.ts "dark mode support" --complexity detailed
+ *
+ * Examples:
+ *   bun run agents/dream-feature-mapper.ts "real-time collaborative editing"
+ *   bun run agents/dream-feature-mapper.ts "user authentication with OAuth" --output docs/auth-roadmap.md
+ *   bun run agents/dream-feature-mapper.ts "dark mode support" --complexity quick --no-code
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type ComplexityLevel = "quick" | "detailed" | "comprehensive";
 
 interface MapperOptions {
   featureDescription: string;
-  outputPath?: string;
-  complexityLevel?: 'quick' | 'detailed' | 'comprehensive';
-  includeStarterCode?: boolean;
+  outputPath: string;
+  complexityLevel: ComplexityLevel;
+  includeStarterCode: boolean;
   focusDirectory?: string;
 }
 
-async function runDreamFeatureMapper(options: MapperOptions) {
+function printHelp(): void {
+  console.log(`
+🗺️  Dream Feature Mapper
+
+Transforms your dream feature ideas into actionable implementation roadmaps!
+
+Usage:
+  bun run agents/dream-feature-mapper.ts "<feature description>" [options]
+
+Arguments:
+  <feature description>   Your dream feature in plain English (required)
+
+Options:
+  --output <path>        Output file path (default: ./FEATURE_ROADMAP.md)
+  --complexity <level>   Detail level: quick|detailed|comprehensive (default: detailed)
+  --no-code             Skip starter code generation
+  --focus <directory>   Focus analysis on specific directory
+  --help, -h            Show this help message
+
+Examples:
+  bun run agents/dream-feature-mapper.ts "real-time collaborative editing"
+  bun run agents/dream-feature-mapper.ts "user authentication with OAuth" --output docs/auth-roadmap.md
+  bun run agents/dream-feature-mapper.ts "dark mode support" --complexity quick --no-code
+  bun run agents/dream-feature-mapper.ts "export to PDF" --focus src/features/documents
+  bun run agents/dream-feature-mapper.ts "AI-powered search" --complexity comprehensive
+  `);
+}
+
+function parseOptions(): MapperOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help || positionals.length === 0) {
+    printHelp();
+    return null;
+  }
+
+  const featureDescription = positionals[0];
+  if (!featureDescription) {
+    console.error("❌ Error: Feature description is required\n");
+    console.log('Example: bun run agents/dream-feature-mapper.ts "real-time notifications"');
+    console.log("Run with --help for more information");
+    process.exit(1);
+  }
+
+  const rawOutput = values.output;
+  const outputPath =
+    typeof rawOutput === "string" && rawOutput.length > 0
+      ? rawOutput
+      : "./FEATURE_ROADMAP.md";
+
+  const rawComplexity = values.complexity;
+  const complexityLevel: ComplexityLevel =
+    typeof rawComplexity === "string" &&
+    ["quick", "detailed", "comprehensive"].includes(rawComplexity)
+      ? (rawComplexity as ComplexityLevel)
+      : "detailed";
+
+  const includeStarterCode = values["no-code"] !== true;
+
+  const rawFocus = values.focus;
+  const focusDirectory =
+    typeof rawFocus === "string" && rawFocus.length > 0
+      ? rawFocus
+      : undefined;
+
+  return {
+    featureDescription,
+    outputPath,
+    complexityLevel,
+    includeStarterCode,
+    focusDirectory,
+  };
+}
+
+function buildPrompt(options: MapperOptions): string {
   const {
     featureDescription,
-    outputPath = './FEATURE_ROADMAP.md',
-    complexityLevel = 'detailed',
-    includeStarterCode = true,
+    outputPath,
+    includeStarterCode,
     focusDirectory,
   } = options;
 
-  console.log('🗺️  Dream Feature Mapper Agent\n');
-  console.log(`Feature: "${featureDescription}"`);
-  console.log(`Complexity: ${complexityLevel}`);
-  console.log(`Output: ${outputPath}\n`);
-
   const focusScope = focusDirectory
     ? `focusing primarily on the "${focusDirectory}" directory`
-    : 'analyzing the entire codebase';
+    : "analyzing the entire codebase";
 
-  const prompt = `You are a Dream Feature Mapper. Your mission is to transform a developer's dream feature idea into a concrete, actionable implementation roadmap.
+  return `You are a Dream Feature Mapper. Your mission is to transform a developer's dream feature idea into a concrete, actionable implementation roadmap.
 
 ## The Dream Feature
 "${featureDescription}"
@@ -63,7 +140,7 @@ Create a comprehensive implementation roadmap that turns this dream into reality
    - Identify the primary language and framework being used
 
 2. Analyze existing architecture and patterns:
-   ${focusDirectory ? `- Focus heavily on: ${focusDirectory}` : '- Scan the main source directories'}
+   ${focusDirectory ? `- Focus heavily on: ${focusDirectory}` : "- Scan the main source directories"}
    - Use Grep to find similar existing features or patterns: \`pattern: "class|function|interface"\`
    - Identify state management approach (Redux, Context, Vuex, etc.)
    - Find API/backend integration patterns
@@ -148,7 +225,7 @@ Generate 2-3 starter code snippets that match the project's coding style:
 
 **Snippet 1: [e.g., "Core Feature Component"]**
 \`\`\`typescript
-// File: src/features/${featureDescription.toLowerCase().replace(/\s+/g, '-')}/FeatureComponent.tsx
+// File: src/features/${featureDescription.toLowerCase().replace(/\s+/g, "-")}/FeatureComponent.tsx
 // Based on patterns found in: [reference existing files]
 
 [Generate actual starter code here that matches the codebase style]
@@ -156,10 +233,10 @@ Generate 2-3 starter code snippets that match the project's coding style:
 
 **Snippet 2: [e.g., "API Integration"]**
 \`\`\`typescript
-// File: src/api/${featureDescription.toLowerCase().replace(/\s+/g, '-')}.ts
+// File: src/api/${featureDescription.toLowerCase().replace(/\s+/g, "-")}.ts
 [Generate actual code]
 \`\`\`
-` : ''}
+` : ""}
 
 #### 📋 Checklist Before Starting
 - [ ] Review existing [relevant files] to understand patterns
@@ -189,217 +266,73 @@ Generate 2-3 starter code snippets that match the project's coding style:
 - Highlight potential pitfalls
 - Make the roadmap feel achievable and exciting
 
-Start by analyzing the codebase structure and tech stack.`;
+Start by analyzing the codebase structure and tech stack.`.trim();
+}
 
-  const queryStream = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'acceptEdits',
-      maxTurns: 40,
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "output",
+    "complexity",
+    "no-code",
+    "noCode",
+    "focus",
+    "help",
+    "h",
+  ] as const;
 
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-        'TodoWrite'
-      ],
-
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Glob') {
-                    console.log('🔍 Discovering project structure...');
-                  } else if (input.tool_name === 'Grep') {
-                    console.log('🔎 Analyzing code patterns...');
-                  } else if (input.tool_name === 'Read') {
-                    const filePath = (input.tool_input as any).file_path || '';
-                    if (filePath.includes('package.json') || filePath.includes('tsconfig')) {
-                      console.log('📦 Analyzing tech stack...');
-                    }
-                  } else if (input.tool_name === 'Write') {
-                    console.log('📝 Generating implementation roadmap...');
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ],
-
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`✅ Roadmap written to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ]
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  });
-
-  let startTime = Date.now();
-  let roadmapComplete = false;
-
-  // Stream results
-  for await (const message of queryStream) {
-    switch (message.type) {
-      case 'assistant':
-        // Show key insights from assistant
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            const text = block.text;
-            // Show important analysis points
-            if (text.includes('Tech Stack:') || text.includes('Found:') || text.includes('Approach:')) {
-              const snippet = text.length > 150 ? text.substring(0, 150) + '...' : text;
-              console.log(`\n💭 ${snippet}`);
-            }
-          }
-        }
-        break;
-
-      case 'result':
-        roadmapComplete = true;
-        const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log('\n' + '='.repeat(60));
-        if (message.subtype === 'success') {
-          console.log('✨ Dream Feature Roadmap Complete!');
-          console.log('='.repeat(60));
-          console.log(`🗺️  Your implementation roadmap is ready at: ${outputPath}`);
-          console.log(`\n📊 Statistics:`);
-          console.log(`   Time: ${elapsedTime}s`);
-          console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`   Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-          if (message.usage.cache_read_input_tokens) {
-            console.log(`   Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-          }
-
-          console.log('\n🚀 Next Step: Open the roadmap and start with Phase 1, Step 1!');
-          console.log('💡 Tip: Adjust the roadmap as you learn more during implementation.');
-        } else {
-          console.log('❌ Error generating roadmap');
-          console.log('='.repeat(60));
-          console.log(`Error type: ${message.subtype}`);
-        }
-        break;
-
-      case 'system':
-        if (message.subtype === 'init') {
-          console.log('🚀 Initializing Dream Feature Mapper...');
-          console.log(`   Model: ${message.model}`);
-          console.log(`   Working Directory: ${message.cwd}\n`);
-        }
-        break;
-    }
-  }
-
-  if (!roadmapComplete) {
-    console.log('\n⚠️  Roadmap generation was interrupted.');
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h') || args.length === 0) {
-  console.log(`
-🗺️  Dream Feature Mapper
-
-Transforms your dream feature ideas into actionable implementation roadmaps!
-
-Usage:
-  bun run agents/dream-feature-mapper.ts "<feature description>" [options]
-
-Arguments:
-  <feature description>   Your dream feature in plain English (required)
-
-Options:
-  --output <path>        Output file path (default: ./FEATURE_ROADMAP.md)
-  --complexity <level>   Detail level: quick|detailed|comprehensive (default: detailed)
-  --no-code             Skip starter code generation
-  --focus <directory>   Focus analysis on specific directory
-  --help, -h            Show this help message
-
-Examples:
-  # Basic usage
-  bun run agents/dream-feature-mapper.ts "real-time collaborative editing"
-
-  # With custom output
-  bun run agents/dream-feature-mapper.ts "user authentication with OAuth" --output docs/auth-roadmap.md
-
-  # Quick overview without code
-  bun run agents/dream-feature-mapper.ts "dark mode support" --complexity quick --no-code
-
-  # Focus on specific part of codebase
-  bun run agents/dream-feature-mapper.ts "export to PDF" --focus src/features/documents
-
-  # Comprehensive analysis
-  bun run agents/dream-feature-mapper.ts "AI-powered search" --complexity comprehensive
-  `);
-  process.exit(args.includes('--help') || args.includes('-h') ? 0 : 1);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
 }
 
-// Parse feature description (first non-flag argument)
-let featureDescription = '';
-const options: MapperOptions = {
-  featureDescription: '',
-  outputPath: './FEATURE_ROADMAP.md',
-  complexityLevel: 'detailed',
-  includeStarterCode: true,
+console.log("🗺️  Dream Feature Mapper\n");
+console.log(`Feature: "${options.featureDescription}"`);
+console.log(`Complexity: ${options.complexityLevel}`);
+console.log(`Output: ${options.outputPath}`);
+if (options.focusDirectory) {
+  console.log(`Focus: ${options.focusDirectory}`);
+}
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Glob",
+  "Grep",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
 };
 
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-
-  if (!arg) continue;
-
-  if (arg.startsWith('--')) {
-    switch (arg) {
-      case '--output':
-        options.outputPath = args[++i];
-        break;
-      case '--complexity':
-        options.complexityLevel = args[++i] as 'quick' | 'detailed' | 'comprehensive';
-        break;
-      case '--no-code':
-        options.includeStarterCode = false;
-        break;
-      case '--focus':
-        options.focusDirectory = args[++i];
-        break;
-    }
-  } else if (!featureDescription) {
-    featureDescription = arg;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Dream Feature Roadmap Complete!\n");
+    console.log(`🗺️  Your implementation roadmap is ready at: ${options.outputPath}`);
+    console.log("\n🚀 Next Step: Open the roadmap and start with Phase 1, Step 1!");
+    console.log("💡 Tip: Adjust the roadmap as you learn more during implementation.");
   }
-}
-
-if (!featureDescription) {
-  console.error('❌ Error: Feature description is required\n');
-  console.log('Example: bun run agents/dream-feature-mapper.ts "real-time notifications"');
-  console.log('Run with --help for more information');
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-} else {
-  options.featureDescription = featureDescription;
 }
-
-// Run the mapper
-runDreamFeatureMapper(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});

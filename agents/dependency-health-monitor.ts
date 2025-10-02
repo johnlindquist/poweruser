@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Dependency Health Monitor Agent
@@ -14,40 +14,107 @@
  *
  * Usage:
  *   bun run agents/dependency-health-monitor.ts [path] [options]
+ *
+ * Examples:
+ *   # Basic health check
+ *   bun run agents/dependency-health-monitor.ts
+ *
+ *   # Check specific project with license compliance
+ *   bun run agents/dependency-health-monitor.ts ./my-project --licenses
+ *
+ *   # Auto-fix safe updates
+ *   bun run agents/dependency-health-monitor.ts --auto-fix
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type SeverityLevel = 'low' | 'moderate' | 'high' | 'critical';
 
 interface DependencyHealthOptions {
   targetPath: string;
-  checkVulnerabilities?: boolean;
-  checkOutdated?: boolean;
-  checkLicenses?: boolean;
-  autoFixSafe?: boolean;
-  createPR?: boolean;
-  severityThreshold?: 'low' | 'moderate' | 'high' | 'critical';
+  checkVulnerabilities: boolean;
+  checkOutdated: boolean;
+  checkLicenses: boolean;
+  autoFixSafe: boolean;
+  createPR: boolean;
+  severityThreshold: SeverityLevel;
 }
 
-async function monitorDependencyHealth(options: DependencyHealthOptions) {
-  const {
+function printHelp(): void {
+  console.log(`
+🔍 Dependency Health Monitor
+
+Usage:
+  bun run agents/dependency-health-monitor.ts [path] [options]
+
+Arguments:
+  path                    Path to project directory (default: current directory)
+
+Options:
+  --no-vulnerabilities    Skip vulnerability scanning
+  --no-outdated          Skip outdated package check
+  --licenses             Include license compliance check
+  --auto-fix             Automatically fix safe updates (patch/minor versions)
+  --create-pr            Create a pull request with updates
+  --severity <level>     Minimum severity to report (low|moderate|high|critical, default: moderate)
+  --help, -h             Show this help message
+
+Examples:
+  bun run agents/dependency-health-monitor.ts
+  bun run agents/dependency-health-monitor.ts ./my-project --licenses
+  bun run agents/dependency-health-monitor.ts --auto-fix --create-pr
+  bun run agents/dependency-health-monitor.ts --severity critical
+  `);
+}
+
+function parseOptions(): DependencyHealthOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const targetPath = positionals[0] ? resolve(positionals[0]) : process.cwd();
+  const checkVulnerabilities = values["no-vulnerabilities"] !== true;
+  const checkOutdated = values["no-outdated"] !== true;
+  const checkLicenses = values.licenses === true;
+  const autoFixSafe = values["auto-fix"] === true || values.autoFix === true;
+  const createPR = values["create-pr"] === true || values.createPR === true;
+
+  const rawSeverity = values.severity;
+  const severityThreshold: SeverityLevel =
+    typeof rawSeverity === "string" &&
+    ["low", "moderate", "high", "critical"].includes(rawSeverity)
+      ? (rawSeverity as SeverityLevel)
+      : "moderate";
+
+  return {
     targetPath,
-    checkVulnerabilities = true,
-    checkOutdated = true,
-    checkLicenses = false,
-    autoFixSafe = false,
-    createPR = false,
-    severityThreshold = 'moderate',
+    checkVulnerabilities,
+    checkOutdated,
+    checkLicenses,
+    autoFixSafe,
+    createPR,
+    severityThreshold,
+  };
+}
+
+function buildPrompt(options: DependencyHealthOptions): string {
+  const {
+    checkVulnerabilities,
+    checkOutdated,
+    checkLicenses,
+    autoFixSafe,
+    createPR,
+    severityThreshold,
   } = options;
 
-  console.log('🔍 Starting Dependency Health Monitor...\n');
-  console.log(`Target: ${targetPath}`);
-  console.log(`Check Vulnerabilities: ${checkVulnerabilities}`);
-  console.log(`Check Outdated: ${checkOutdated}`);
-  console.log(`Check Licenses: ${checkLicenses}`);
-  console.log(`Severity Threshold: ${severityThreshold}\n`);
-
-  const prompt = `
-You are a dependency security and maintenance expert. Analyze the dependencies at "${targetPath}" and generate a comprehensive health report.
+  return `
+You are a dependency security and maintenance expert. Analyze the dependencies and generate a comprehensive health report.
 
 Your tasks:
 1. **Identify Dependency Files**: Find all dependency manifests:
@@ -126,221 +193,86 @@ Generate a comprehensive report with:
 
 Format the report in markdown for easy reading.
 `.trim();
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: targetPath,
-      // Define specialized subagents
-      agents: {
-        'vulnerability-scanner': {
-          description: 'Scans for security vulnerabilities in dependencies',
-          tools: ['Read', 'Bash', 'Grep', 'Glob', 'WebFetch'],
-          prompt: `You are a security specialist. Analyze dependencies for vulnerabilities using security databases and audit tools.`,
-          model: 'sonnet',
-        },
-        'version-analyzer': {
-          description: 'Analyzes package versions and identifies outdated dependencies',
-          tools: ['Read', 'Bash', 'Grep', 'Glob'],
-          prompt: `You analyze package versions and identify update opportunities. Check changelogs for breaking changes.`,
-          model: 'haiku',
-        },
-        'license-checker': {
-          description: 'Checks license compliance across all dependencies',
-          tools: ['Read', 'Bash', 'Grep', 'WebFetch'],
-          prompt: `You analyze software licenses for compliance issues and conflicts.`,
-          model: 'haiku',
-        },
-        'upgrade-planner': {
-          description: 'Creates prioritized upgrade plans with risk assessment',
-          tools: ['Read', 'Write', 'Bash', 'WebFetch'],
-          prompt: `You create detailed upgrade plans that balance security, stability, and effort.`,
-          model: 'sonnet',
-        },
-      },
-      // Allow necessary tools
-      allowedTools: [
-        'Read',
-        'Write',
-        'Bash',
-        'Glob',
-        'Grep',
-        'WebFetch',
-        'Task',
-        'TodoWrite',
-      ],
-      // Permission mode based on auto-fix setting
-      permissionMode: autoFixSafe ? 'acceptEdits' : 'default',
-      // Add hooks to track progress
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any).command;
-                  if (command?.includes('audit') || command?.includes('outdated')) {
-                    console.log(`🔍 Running security scan...`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse' && input.tool_name === 'Bash') {
-                  const command = (input.tool_input as any).command;
-                  const output = (input.tool_response as any).output || '';
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "no-vulnerabilities",
+    "no-outdated",
+    "licenses",
+    "auto-fix",
+    "autoFix",
+    "create-pr",
+    "createPR",
+    "severity",
+    "help",
+    "h",
+  ] as const;
 
-                  if (command?.includes('audit')) {
-                    const vulnCount = (output.match(/vulnerabilities/gi) || []).length;
-                    if (vulnCount > 0) {
-                      console.log(`⚠️  Found vulnerabilities in dependencies`);
-                    } else {
-                      console.log(`✅ No vulnerabilities detected`);
-                    }
-                  }
-
-                  if (command?.includes('outdated')) {
-                    console.log(`📊 Outdated packages analyzed`);
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n🎉 Dependency health check complete!');
-                console.log('\nNext steps:');
-                console.log('1. Review the generated report');
-                console.log('2. Prioritize critical security updates');
-                console.log('3. Run suggested update commands');
-                console.log('4. Test thoroughly after updates');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      // Configure max turns
-      maxTurns: 30,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
-
-  // Stream results
-  let reportGenerated = false;
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      const textContent = message.message.content.find((c: any) => c.type === 'text');
-      if (textContent && textContent.type === 'text') {
-        // Show assistant messages but filter out tool use details
-        const text = textContent.text;
-        if (!text.includes('tool_use') && text.length > 10) {
-          console.log('\n💭', text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(60));
-        console.log('📊 Dependency Health Report Complete');
-        console.log('='.repeat(60));
-        console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`API calls: ${(message.duration_api_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`Turns: ${message.num_turns}`);
-        console.log(
-          `Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`
-        );
-
-        if (message.usage.cache_read_input_tokens) {
-          console.log(`Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-        }
-
-        reportGenerated = true;
-      } else {
-        console.error('\n❌ Error during dependency analysis:', message.subtype);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  }
-
-  if (!reportGenerated) {
-    console.log('\n⚠️  No report was generated. Check the output above for errors.');
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-🔍 Dependency Health Monitor
-
-Usage:
-  bun run agents/dependency-health-monitor.ts [path] [options]
-
-Arguments:
-  path                    Path to project directory (default: current directory)
-
-Options:
-  --no-vulnerabilities    Skip vulnerability scanning
-  --no-outdated          Skip outdated package check
-  --licenses             Include license compliance check
-  --auto-fix             Automatically fix safe updates (patch/minor versions)
-  --create-pr            Create a pull request with updates
-  --severity <level>     Minimum severity to report (low|moderate|high|critical, default: moderate)
-  --help, -h             Show this help message
-
-Examples:
-  # Basic health check
-  bun run agents/dependency-health-monitor.ts
-
-  # Check specific project with license compliance
-  bun run agents/dependency-health-monitor.ts ./my-project --licenses
-
-  # Auto-fix safe updates and create PR
-  bun run agents/dependency-health-monitor.ts --auto-fix --create-pr
-
-  # Only show critical vulnerabilities
-  bun run agents/dependency-health-monitor.ts --severity critical
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse target path (default to current directory)
-const targetPath = args.find((arg) => !arg.startsWith('--')) || process.cwd();
+console.log("🔍 Dependency Health Monitor\n");
+console.log(`Target: ${options.targetPath}`);
+console.log(`Check Vulnerabilities: ${options.checkVulnerabilities}`);
+console.log(`Check Outdated: ${options.checkOutdated}`);
+console.log(`Check Licenses: ${options.checkLicenses}`);
+console.log(`Auto-fix: ${options.autoFixSafe ? "Enabled" : "Disabled"}`);
+console.log(`Create PR: ${options.createPR ? "Yes" : "No"}`);
+console.log(`Severity Threshold: ${options.severityThreshold}`);
+console.log("");
 
-// Parse CLI options
-const options: DependencyHealthOptions = {
-  targetPath,
-  checkVulnerabilities: !args.includes('--no-vulnerabilities'),
-  checkOutdated: !args.includes('--no-outdated'),
-  checkLicenses: args.includes('--licenses'),
-  autoFixSafe: args.includes('--auto-fix'),
-  createPR: args.includes('--create-pr'),
-  severityThreshold: 'moderate',
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Bash",
+  "Glob",
+  "Grep",
+  "WebFetch",
+  "Task",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoFixSafe ? "acceptEdits" : "default",
 };
 
-// Parse severity threshold
-const severityIndex = args.indexOf('--severity');
-if (severityIndex !== -1) {
-  const level = args[severityIndex + 1];
-  if (level && ['low', 'moderate', 'high', 'critical'].includes(level)) {
-    options.severityThreshold = level as any;
-  }
-}
+// Change working directory to target path
+const originalCwd = process.cwd();
+process.chdir(options.targetPath);
 
-// Run the dependency health monitor
-monitorDependencyHealth(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n🎉 Dependency health check complete!\n");
+    console.log("Next steps:");
+    console.log("1. Review the generated report");
+    console.log("2. Prioritize critical security updates");
+    console.log("3. Run suggested update commands");
+    console.log("4. Test thoroughly after updates");
+  }
+  process.chdir(originalCwd);
+  process.exit(exitCode);
+} catch (error) {
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

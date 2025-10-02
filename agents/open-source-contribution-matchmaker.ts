@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Open Source Contribution Matchmaker
@@ -14,194 +14,235 @@
  * - Suggests how to introduce yourself to maintainers
  *
  * Usage:
- *   bun agents/open-source-contribution-matchmaker.ts [--dir <path>] [--output <file>]
+ *   bun run agents/open-source-contribution-matchmaker.ts [--dir <path>] [--output <file>]
+ *
+ * Examples:
+ *   # Analyze current directory
+ *   bun run agents/open-source-contribution-matchmaker.ts
+ *
+ *   # Analyze specific directory
+ *   bun run agents/open-source-contribution-matchmaker.ts --dir ./my-project
+ *
+ *   # Save results to file
+ *   bun run agents/open-source-contribution-matchmaker.ts --output contribution-plan.md
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function analyzeSkills(targetDir: string): Promise<string> {
-  const prompt = `Analyze the codebase in ${targetDir} to identify:
-1. Primary programming languages used (with approximate percentage)
-2. Frameworks and libraries in use
-3. Common coding patterns and practices observed
-4. Estimate the developer's experience level based on code complexity
-
-Provide a structured analysis that can be used to match with open source opportunities.`;
-
-  let analysis = "";
-
-  for await (const message of query({
-    prompt,
-    options: {
-      cwd: targetDir,
-      allowedTools: ["Read", "Glob", "Grep", "Bash"],
-      permissionMode: "bypassPermissions",
-    },
-  })) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          analysis += block.text;
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        analysis += `\n\n${message.result}`;
-      }
-    }
-  }
-
-  return analysis;
+interface ContributionOptions {
+  targetDir: string;
+  outputFile?: string;
 }
 
-async function findOpportunities(skillAnalysis: string): Promise<string> {
-  const prompt = `Based on this skill analysis:
+const DEFAULT_OUTPUT_FILE = "contribution-plan.md";
 
-${skillAnalysis}
+function printHelp(): void {
+  console.log(`
+🔍 Open Source Contribution Matchmaker
 
-Search GitHub for 5-10 open source projects that would be perfect contribution opportunities. Look for:
-- Projects using the same languages/frameworks
+Usage:
+  bun run agents/open-source-contribution-matchmaker.ts [options]
+
+Options:
+  --dir <path>            Directory to analyze (default: current directory)
+  --output <file>         Save plan to file (default: print to console)
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/open-source-contribution-matchmaker.ts
+  bun run agents/open-source-contribution-matchmaker.ts --dir ./my-project
+  bun run agents/open-source-contribution-matchmaker.ts --output ${DEFAULT_OUTPUT_FILE}
+  `);
+}
+
+function parseOptions(): ContributionOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawDir = values.dir;
+  const rawOutput = values.output;
+
+  const targetDir = typeof rawDir === "string" && rawDir.length > 0
+    ? rawDir
+    : process.cwd();
+
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : undefined;
+
+  return {
+    targetDir,
+    outputFile,
+  };
+}
+
+function buildPrompt(options: ContributionOptions): string {
+  const { targetDir, outputFile } = options;
+
+  return `
+You are an Open Source Contribution Matchmaker. Your goal is to help developers find perfect contribution opportunities.
+
+Target Directory: ${targetDir}
+${outputFile ? `Output File: ${outputFile}` : "Output: Console"}
+
+Execute the following multi-phase analysis:
+
+## Phase 1: Skill Analysis
+Analyze the codebase in ${targetDir} to identify:
+1. Primary programming languages used (with approximate percentage)
+   - Use Glob to find file types: *.js, *.ts, *.py, *.go, etc.
+   - Count files to estimate language distribution
+2. Frameworks and libraries in use
+   - Read package.json, requirements.txt, go.mod, Cargo.toml, etc.
+   - Identify key dependencies
+3. Common coding patterns and practices observed
+   - Read a sample of source files
+   - Note architectural patterns (MVC, functional, OOP, etc.)
+4. Estimate the developer's experience level based on:
+   - Code complexity
+   - Project structure
+   - Testing practices
+   - Documentation quality
+
+## Phase 2: Find Opportunities
+Search GitHub for 5-10 open source projects that would be perfect contribution opportunities:
+- Projects using the same languages/frameworks identified in Phase 1
 - Issues labeled "good first issue", "help wanted", or "beginner-friendly"
-- Active projects with recent commits
-- Projects at an appropriate difficulty level
+- Active projects with recent commits (within last 3 months)
+- Projects at an appropriate difficulty level based on the skill assessment
 
 For each opportunity, provide:
 - Repository name and URL
 - Specific issue title and URL
-- Why it's a good match
-- Estimated difficulty
+- Why it's a good match for this developer's skills
+- Estimated difficulty (Beginner/Intermediate/Advanced)
+- Potential impact of the contribution
 
-Format the results as a structured list.`;
-
-  let opportunities = "";
-
-  for await (const message of query({
-    prompt,
-    options: {
-      allowedTools: ["WebSearch"],
-      permissionMode: "bypassPermissions",
-    },
-  })) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          opportunities += block.text;
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        opportunities += `\n\n${message.result}`;
-      }
-    }
-  }
-
-  return opportunities;
-}
-
-async function generateContributionStrategy(
-  skillAnalysis: string,
-  opportunities: string
-): Promise<string> {
-  const prompt = `Based on the skill analysis and opportunities found:
-
-SKILLS:
-${skillAnalysis}
-
-OPPORTUNITIES:
-${opportunities}
-
-Generate a comprehensive contribution plan that includes:
+## Phase 3: Generate Contribution Strategy
+Create a comprehensive contribution plan with:
 1. Prioritized list of opportunities (easiest to hardest)
-2. Step-by-step approach for each opportunity
+2. Step-by-step approach for each opportunity:
+   - How to set up the development environment
+   - What to read in the codebase first
+   - How to approach the specific issue
 3. Template for introducing yourself to maintainers
 4. Draft PR description template
-5. Tips for successful contribution
+5. Tips for successful contribution:
+   - Communication best practices
+   - Code quality expectations
+   - How to handle feedback
 6. Follow-up strategy after first contribution
 
-Make it actionable and encouraging for someone breaking into open source.`;
+## Output Format
+Generate a complete markdown document with:
 
-  let strategy = "";
-
-  for await (const message of query({
-    prompt,
-    options: {
-      allowedTools: [],
-      permissionMode: "bypassPermissions",
-    },
-  })) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          strategy += block.text;
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        strategy += `\n\n${message.result}`;
-      }
-    }
-  }
-
-  return strategy;
-}
-
-async function main() {
-  const args = process.argv.slice(2);
-  const dirIndex = args.indexOf("--dir");
-  const outputIndex = args.indexOf("--output");
-
-  const targetDir = dirIndex !== -1 && args[dirIndex + 1] ? args[dirIndex + 1]! : process.cwd();
-  const outputFile: string | null = outputIndex !== -1 && args[outputIndex + 1] ? args[outputIndex + 1]! : null;
-
-  console.log("🔍 Open Source Contribution Matchmaker");
-  console.log("=" .repeat(50));
-  console.log(`\nAnalyzing codebase in: ${targetDir}\n`);
-
-  // Step 1: Analyze skills
-  console.log("📊 Step 1/3: Analyzing your coding skills...");
-  const skillAnalysis = await analyzeSkills(targetDir);
-  console.log("✅ Skill analysis complete\n");
-
-  // Step 2: Find opportunities
-  console.log("🔎 Step 2/3: Searching for matching opportunities...");
-  const opportunities = await findOpportunities(skillAnalysis);
-  console.log("✅ Found matching opportunities\n");
-
-  // Step 3: Generate contribution strategy
-  console.log("📝 Step 3/3: Creating contribution strategy...");
-  const strategy = await generateContributionStrategy(skillAnalysis, opportunities);
-  console.log("✅ Strategy complete\n");
-
-  // Format the complete plan
-  const completePlan = `# Open Source Contribution Plan
+# Open Source Contribution Plan
 
 ## Your Skill Profile
-${skillAnalysis}
+[Detailed analysis from Phase 1]
 
 ## Matched Opportunities
-${opportunities}
+[List of 5-10 opportunities from Phase 2, ranked by fit and difficulty]
 
 ## Contribution Strategy
-${strategy}
+[Comprehensive strategy from Phase 3]
+
+### Quick Start Guide
+1. [First step]
+2. [Second step]
+3. [Third step]
+
+### Communication Templates
+[Templates for reaching out to maintainers]
+
+### Next Steps
+- [Actionable checklist]
 
 ---
 Generated by Open Source Contribution Matchmaker
-`;
 
-  // Output results
-  if (outputFile !== null) {
-    await Bun.write(outputFile, completePlan);
-    console.log(`\n✅ Complete plan saved to: ${outputFile}`);
-  } else {
-    console.log("\n" + "=".repeat(50));
-    console.log(completePlan);
-  }
+${outputFile ? `\nSave the complete plan to ${outputFile} using the Write tool.` : ""}
 
-  console.log("\n🚀 Ready to start contributing!");
-  console.log("💡 Tip: Start with the easiest opportunity to build confidence");
+Make it actionable, encouraging, and personalized to this developer's actual skills and experience level.
+`.trim();
 }
 
-main().catch((error) => {
-  console.error("❌ Error:", error.message);
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["dir", "output", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔍 Open Source Contribution Matchmaker\n");
+console.log("=" .repeat(50));
+console.log(`\nAnalyzing codebase in: ${options.targetDir}`);
+if (options.outputFile) {
+  console.log(`Output file: ${options.outputFile}`);
+}
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+// Store original cwd and change to target directory
+const originalCwd = process.cwd();
+process.chdir(options.targetDir);
+
+const allowedTools = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Bash",
+  "WebSearch",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original working directory
+  process.chdir(originalCwd);
+
+  if (exitCode === 0) {
+    console.log("\n✨ Contribution matching complete!\n");
+    if (options.outputFile) {
+      console.log(`📄 Full plan saved to: ${options.outputFile}`);
+    }
+    console.log("\n🚀 Ready to start contributing!");
+    console.log("💡 Tip: Start with the easiest opportunity to build confidence");
+    console.log("💡 Tip: Read the project's CONTRIBUTING.md before starting");
+    console.log("💡 Tip: Don't hesitate to ask questions in the issue comments");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original working directory on error
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

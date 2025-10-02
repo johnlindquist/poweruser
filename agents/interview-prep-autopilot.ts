@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Interview Prep Autopilot Agent
@@ -26,8 +26,9 @@
  *   --output <path>         Output directory (default: ./interview-prep)
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface InterviewPrepOptions {
   githubUsername: string;
@@ -37,28 +38,85 @@ interface InterviewPrepOptions {
   outputDir: string;
 }
 
-async function generateInterviewPrep(options: InterviewPrepOptions) {
-  const { githubUsername, jobUrl, targetRole, focusRepo, outputDir } = options;
+const DEFAULT_OUTPUT_DIR = "./interview-prep";
 
-  console.log('🎯 Interview Prep Autopilot Starting...\n');
-  console.log(`👤 GitHub: @${githubUsername}`);
-  if (targetRole) console.log(`🎯 Target Role: ${targetRole}`);
-  if (jobUrl) console.log(`📄 Job Description: ${jobUrl}`);
-  if (focusRepo) console.log(`📦 Focus Repository: ${focusRepo}`);
-  console.log(`📂 Output Directory: ${outputDir}\n`);
+function printHelp(): void {
+  console.log(`
+🎯 Interview Prep Autopilot - Transform GitHub activity into interview confidence
 
-  const prompt = buildPrompt(options);
+Usage:
+  bun run agents/interview-prep-autopilot.ts --github <username> [options]
 
-  console.log('🤖 Analyzing your GitHub profile and generating interview materials...\n');
+Options:
+  --github <username>     Your GitHub username (required)
+  --job-url <url>         URL of job description to tailor prep for
+  --role <title>          Target role (e.g., "Senior Backend Engineer")
+  --repo <name>           Focus on specific repository
+  --output <path>         Output directory (default: ${DEFAULT_OUTPUT_DIR})
+  --help, -h              Show this help
 
-  try {
-    for await (const message of query({
-      prompt,
-      options: {
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: `
+Examples:
+  # Basic interview prep from GitHub profile
+  bun run agents/interview-prep-autopilot.ts --github yourusername
+
+  # Tailored prep for specific job posting
+  bun run agents/interview-prep-autopilot.ts --github yourusername --job-url "https://example.com/job"
+
+  # Focus on specific role and repository
+  bun run agents/interview-prep-autopilot.ts --github yourusername --role "Staff Engineer" --repo "my-best-project"
+
+  # Complete preparation with custom output directory
+  bun run agents/interview-prep-autopilot.ts --github yourusername --job-url "https://example.com/job" --role "Senior Backend Engineer" --output ./acme-interview-prep
+  `);
+}
+
+function parseOptions(): InterviewPrepOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const githubUsername = values.github;
+  if (!githubUsername || typeof githubUsername !== "string") {
+    console.error("❌ Error: --github <username> is required");
+    printHelp();
+    process.exit(1);
+  }
+
+  const rawJobUrl = values["job-url"];
+  const rawRole = values.role;
+  const rawRepo = values.repo;
+  const rawOutput = values.output;
+
+  const jobUrl = typeof rawJobUrl === "string" && rawJobUrl.length > 0
+    ? rawJobUrl
+    : undefined;
+
+  const targetRole = typeof rawRole === "string" && rawRole.length > 0
+    ? rawRole
+    : undefined;
+
+  const focusRepo = typeof rawRepo === "string" && rawRepo.length > 0
+    ? rawRepo
+    : undefined;
+
+  const outputDir = typeof rawOutput === "string" && rawOutput.length > 0
+    ? resolve(rawOutput)
+    : DEFAULT_OUTPUT_DIR;
+
+  return {
+    githubUsername,
+    jobUrl,
+    targetRole,
+    focusRepo,
+    outputDir,
+  };
+}
+
+const SYSTEM_PROMPT = `
 You are the Interview Prep Autopilot, an expert technical interviewer and career coach who helps developers confidently articulate their experience.
 
 Your mission is to transform a developer's GitHub activity into compelling interview stories and preparation materials.
@@ -171,56 +229,7 @@ Generate comprehensive markdown files in the output directory:
 - **Be Prepared**: Anticipate follow-up questions for each story
 
 Remember: Your goal is to help developers confidently articulate the impressive work they've already done, not fabricate experiences.
-`
-        },
-        allowedTools: [
-          'Bash',
-          'Read',
-          'Write',
-          'Grep',
-          'Glob',
-          'WebFetch',
-          'WebSearch',
-          'TodoWrite'
-        ],
-        permissionMode: 'acceptEdits',
-        includePartialMessages: false,
-      },
-    })) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n\n✅ Interview Prep Materials Complete!\n');
-          console.log('📊 Summary:');
-          console.log(`   Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`   Turns: ${message.num_turns}`);
-          console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`   Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-          console.log(`\n📂 Check ${outputDir}/ for your complete interview prep materials!`);
-          console.log('\n🎯 Pro Tips:');
-          console.log('   - Practice telling each STAR story out loud');
-          console.log('   - Review technical questions and code before interview');
-          console.log('   - Keep the cheat sheet open during virtual interviews');
-          console.log('   - Remember: You\'ve done impressive work - now showcase it!\n');
-        } else {
-          console.error('\n❌ Failed to generate interview prep materials');
-          if (message.subtype === 'error_max_turns') {
-            console.error('Error: Maximum turns reached');
-          }
-        }
-      }
-    }
-  } catch (error) {
-    console.error('\n❌ Error during interview prep generation:', error);
-    process.exit(1);
-  }
-}
+`.trim();
 
 function buildPrompt(options: InterviewPrepOptions): string {
   const { githubUsername, jobUrl, targetRole, focusRepo, outputDir } = options;
@@ -377,67 +386,68 @@ IMPORTANT:
 `;
 }
 
-// Parse command line arguments
-function parseArgsFromArgv(): InterviewPrepOptions {
-  const { values } = parseArgs({
-    args: process.argv.slice(2),
-    options: {
-      help: { type: 'boolean', short: 'h', default: false },
-      github: { type: 'string' },
-      'job-url': { type: 'string' },
-      role: { type: 'string' },
-      repo: { type: 'string' },
-      output: { type: 'string', default: './interview-prep' },
-    },
-    strict: true,
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["github", "job-url", "role", "repo", "output", "help", "h"] as const;
 
-  if (values.help || process.argv.slice(2).length === 0) {
-    console.log(`
-🎯 Interview Prep Autopilot - Transform GitHub activity into interview confidence
-
-Usage: bun run agents/interview-prep-autopilot.ts [options]
-
-Options:
-  --github <username>     Your GitHub username (required)
-  --job-url <url>         URL of job description to tailor prep for
-  --role <title>          Target role (e.g., "Senior Backend Engineer")
-  --repo <name>           Focus on specific repository
-  --output <path>         Output directory (default: ./interview-prep)
-  --help, -h             Show this help message
-
-Examples:
-  # Basic interview prep from GitHub profile
-  bun run agents/interview-prep-autopilot.ts --github yourusername
-
-  # Tailored prep for specific job posting
-  bun run agents/interview-prep-autopilot.ts --github yourusername --job-url "https://example.com/job"
-
-  # Focus on specific role and repository
-  bun run agents/interview-prep-autopilot.ts --github yourusername --role "Staff Engineer" --repo "my-best-project"
-
-  # Complete preparation with custom output directory
-  bun run agents/interview-prep-autopilot.ts --github yourusername --job-url "https://example.com/job" --role "Senior Backend Engineer" --output ./acme-interview-prep
-`);
-    process.exit(0);
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
   }
-
-  // Validate required arguments
-  if (!values.github) {
-    console.error('Error: --github <username> is required');
-    console.error('Run with --help to see usage examples');
-    process.exit(1);
-  }
-
-  return {
-    githubUsername: values.github as string,
-    jobUrl: values['job-url'] as string | undefined,
-    targetRole: values.role as string | undefined,
-    focusRepo: values.repo as string | undefined,
-    outputDir: values.output as string,
-  };
 }
 
 // Main execution
-const options = parseArgsFromArgv();
-generateInterviewPrep(options);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🎯 Interview Prep Autopilot\n");
+console.log(`👤 GitHub: @${options.githubUsername}`);
+if (options.targetRole) console.log(`🎯 Target Role: ${options.targetRole}`);
+if (options.jobUrl) console.log(`📄 Job Description: ${options.jobUrl}`);
+if (options.focusRepo) console.log(`📦 Focus Repository: ${options.focusRepo}`);
+console.log(`📂 Output Directory: ${options.outputDir}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "WebSearch",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "append-system-prompt": SYSTEM_PROMPT,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Interview Prep Materials Complete!\n");
+    console.log(`📂 Check ${options.outputDir}/ for your complete interview prep materials!`);
+    console.log("\n🎯 Pro Tips:");
+    console.log("   - Practice telling each STAR story out loud");
+    console.log("   - Review technical questions and code before interview");
+    console.log("   - Keep the cheat sheet open during virtual interviews");
+    console.log("   - Remember: You've done impressive work - now showcase it!\n");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

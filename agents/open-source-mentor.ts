@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Open Source Mentor Agent
@@ -9,9 +9,23 @@
  * - Generating comprehensive contribution guides
  * - Drafting professional PR descriptions
  * - Building personalized contributor roadmaps
+ *
+ * Usage:
+ *   bun run agents/open-source-mentor.ts <repository> [options]
+ *
+ * Examples:
+ *   # Find beginner-friendly issues in React
+ *   bun run agents/open-source-mentor.ts facebook/react
+ *
+ *   # Get guidance on a specific Next.js issue
+ *   bun run agents/open-source-mentor.ts vercel/next.js --issue 12345
+ *
+ *   # Create personalized roadmap for contributing to VS Code
+ *   bun run agents/open-source-mentor.ts microsoft/vscode --username yourname --roadmap
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface MentorOptions {
   repository: string;
@@ -20,20 +34,7 @@ interface MentorOptions {
   generateRoadmap?: boolean;
 }
 
-async function runOpenSourceMentor(options: MentorOptions) {
-  const { repository } = options;
-
-  console.log(`🎯 Open Source Mentor: Analyzing ${repository}...\n`);
-
-  const prompt = buildPrompt(options);
-
-  const result = query({
-    prompt,
-    options: {
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-        append: `
+const SYSTEM_PROMPT = `
 You are the Open Source Mentor, an expert guide for developers who want to contribute to major open source projects.
 
 Your mission is to transform intimidating large codebases into approachable contribution opportunities and help developers achieve their dream of becoming recognized open source contributors.
@@ -64,44 +65,7 @@ Your mission is to transform intimidating large codebases into approachable cont
 - **Write**: Generate contribution guides, setup instructions, PR templates
 
 Remember: Your goal is to empower developers to contribute confidently and meaningfully to open source.
-`
-      },
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Write',
-        'Grep',
-        'Glob',
-        'WebFetch',
-        'TodoWrite'
-      ],
-      permissionMode: 'bypassPermissions',
-    },
-  });
-
-  let finalResult = '';
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const content of message.message.content) {
-        if (content.type === 'text') {
-          process.stdout.write(content.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        finalResult = message.result;
-        console.log('\n\n✅ Analysis Complete!\n');
-        console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-      } else {
-        console.error('\n\n❌ Error during analysis');
-      }
-    }
-  }
-
-  return finalResult;
-}
+`.trim();
 
 function buildPrompt(options: MentorOptions): string {
   const { repository, issueNumber, githubUsername, generateRoadmap } = options;
@@ -156,10 +120,7 @@ ${githubUsername ? '5' : '4'}. Create a 90-day roadmap for going from first-time
 Generate all guides as markdown files in a './contribution-guides/' directory for easy reference.`;
 }
 
-// CLI Interface
-const args = process.argv.slice(2);
-
-if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+function printHelp(): void {
   console.log(`
 🎯 Open Source Mentor - Your guide to contributing to major OSS projects
 
@@ -187,34 +148,104 @@ Examples:
 
   # Full analysis with everything
   bun run agents/open-source-mentor.ts vuejs/core --username yourname --issue 789 --roadmap
-`);
+  `);
+}
+
+function parseOptions(): MentorOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const repository = positionals[0];
+  if (!repository || !repository.includes('/')) {
+    console.error('❌ Error: Please provide a valid repository in owner/repo format (e.g., facebook/react)');
+    printHelp();
+    process.exit(1);
+  }
+
+  const rawIssue = values.issue;
+  const issueNumber = typeof rawIssue === 'string' && rawIssue.length > 0
+    ? parseInt(rawIssue, 10)
+    : undefined;
+
+  const rawUsername = values.username;
+  const githubUsername = typeof rawUsername === 'string' && rawUsername.length > 0
+    ? rawUsername
+    : undefined;
+
+  const generateRoadmap = values.roadmap === true;
+
+  return {
+    repository,
+    issueNumber,
+    githubUsername,
+    generateRoadmap,
+  };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["issue", "username", "roadmap", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-const repository = args[0];
+console.log("🎯 Open Source Mentor\n");
+console.log(`Repository: ${options.repository}`);
+if (options.issueNumber) console.log(`Issue: #${options.issueNumber}`);
+if (options.githubUsername) console.log(`GitHub Username: ${options.githubUsername}`);
+console.log(`Roadmap: ${options.generateRoadmap ? "Enabled" : "Disabled"}`);
+console.log("");
 
-if (!repository || !repository.includes('/')) {
-  console.error('❌ Error: Please provide a valid repository in owner/repo format (e.g., facebook/react)');
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": SYSTEM_PROMPT,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Open source mentoring complete!\n");
+    console.log("📁 Check ./contribution-guides/ for generated guides");
+    console.log("\nNext steps:");
+    console.log("1. Review the contribution guides");
+    console.log("2. Set up your local development environment");
+    console.log("3. Start with the recommended first contribution");
+    console.log("4. Engage with the community and maintainers");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
 }
-
-const issueIndex = args.indexOf('--issue');
-const issueArg = issueIndex !== -1 ? args[issueIndex + 1] : undefined;
-const issueNumber = issueArg ? parseInt(issueArg) : undefined;
-
-const usernameIndex = args.indexOf('--username');
-const githubUsername = usernameIndex !== -1 && args[usernameIndex + 1]
-  ? args[usernameIndex + 1]
-  : undefined;
-
-const generateRoadmap = args.includes('--roadmap');
-
-runOpenSourceMentor({
-  repository,
-  issueNumber,
-  githubUsername,
-  generateRoadmap,
-}).catch(error => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});

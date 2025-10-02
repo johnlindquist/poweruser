@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * PR Review Checklist Generator Agent
@@ -18,28 +18,98 @@
  *   bun run agents/pr-review-checklist-generator.ts --output PR_DESCRIPTION.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface PRChecklistOptions {
   branch?: string;
-  baseBranch?: string;
-  outputPath?: string;
-  skipTests?: boolean;
-  skipLinting?: boolean;
-  skipFormatting?: boolean;
-  strictMode?: boolean;
+  baseBranch: string;
+  outputPath: string;
+  skipTests: boolean;
+  skipLinting: boolean;
+  skipFormatting: boolean;
+  strictMode: boolean;
 }
 
-async function runPRChecklistGenerator(options: PRChecklistOptions) {
-  const {
+function printHelp(): void {
+  console.log(`
+🔍 PR Review Checklist Generator
+
+Analyzes your changes and generates a comprehensive PR description with hygiene checks!
+
+Usage:
+  bun run agents/pr-review-checklist-generator.ts [options]
+
+Options:
+  --branch <name>        Target branch to analyze (default: current branch)
+  --base <name>          Base branch to compare against (default: main)
+  --output <path>        Output file path (default: ./PR_DESCRIPTION.md)
+  --skip-tests           Skip running the test suite
+  --skip-linting         Skip running the linter
+  --skip-formatting      Skip checking code formatting
+  --strict               Enable strict mode (fail on critical issues)
+  --help, -h             Show this help message
+
+Examples:
+  # Generate PR checklist for current branch
+  bun run agents/pr-review-checklist-generator.ts
+
+  # Analyze a specific branch
+  bun run agents/pr-review-checklist-generator.ts --branch feature/new-auth
+
+  # Compare against develop branch
+  bun run agents/pr-review-checklist-generator.ts --base develop
+
+  # Quick check without running tests
+  bun run agents/pr-review-checklist-generator.ts --skip-tests --skip-linting
+
+  # Strict mode - fail if critical issues found
+  bun run agents/pr-review-checklist-generator.ts --strict
+  `);
+}
+
+function parseOptions(): PRChecklistOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawBranch = values.branch;
+  const rawBase = values.base;
+  const rawOutput = values.output;
+  const skipTests = values["skip-tests"] === true;
+  const skipLinting = values["skip-linting"] === true;
+  const skipFormatting = values["skip-formatting"] === true;
+  const strictMode = values.strict === true;
+
+  const branch = typeof rawBranch === "string" && rawBranch.length > 0
+    ? rawBranch
+    : undefined;
+
+  const baseBranch = typeof rawBase === "string" && rawBase.length > 0
+    ? rawBase
+    : "main";
+
+  const outputPath = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : "./PR_DESCRIPTION.md";
+
+  return {
     branch,
-    baseBranch = 'main',
-    outputPath = './PR_DESCRIPTION.md',
-    skipTests = false,
-    skipLinting = false,
-    skipFormatting = false,
-    strictMode = false,
-  } = options;
+    baseBranch,
+    outputPath,
+    skipTests,
+    skipLinting,
+    skipFormatting,
+    strictMode,
+  };
+}
+
+function buildPrompt(options: PRChecklistOptions): string {
+  const { branch, baseBranch, outputPath, skipTests, skipLinting, skipFormatting, strictMode } = options;
 
   console.log('🔍 PR Review Checklist Generator\n');
   console.log(`Base Branch: ${baseBranch}`);
@@ -49,7 +119,7 @@ async function runPRChecklistGenerator(options: PRChecklistOptions) {
 
   const branchContext = branch ? `branch "${branch}"` : 'current branch';
 
-  const prompt = `You are a PR Review Checklist Generator. Your mission is to analyze the ${branchContext} and create a comprehensive PR description with a hygiene checklist.
+  return `You are a PR Review Checklist Generator. Your mission is to analyze the ${branchContext} and create a comprehensive PR description with a hygiene checklist.
 
 ## Your Task
 
@@ -208,231 +278,60 @@ Use the Write tool to save the PR description to: ${outputPath}
 - Format the output professionally with proper markdown
 
 Start by analyzing the changed files.`;
+}
 
-  const queryStream = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'acceptEdits',
-      maxTurns: 40,
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["branch", "base", "output", "skip-tests", "skip-linting", "skip-formatting", "strict", "help", "h"] as const;
 
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-        'TodoWrite'
-      ],
-
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any).command || '';
-                    if (command.includes('git diff')) {
-                      console.log('📊 Analyzing changed files...');
-                    } else if (command.includes('git log')) {
-                      console.log('📝 Extracting commit messages...');
-                    } else if (command.includes('git blame') || command.includes('--pretty=format')) {
-                      console.log('👥 Identifying contributors...');
-                    } else if (command.includes('test') || command.includes('jest') || command.includes('pytest')) {
-                      console.log('🧪 Running tests...');
-                    } else if (command.includes('lint') || command.includes('eslint')) {
-                      console.log('🔍 Running linter...');
-                    } else if (command.includes('format') || command.includes('prettier')) {
-                      console.log('✨ Checking code formatting...');
-                    }
-                  } else if (input.tool_name === 'Grep') {
-                    const pattern = (input.tool_input as any).pattern || '';
-                    if (pattern.includes('console.log') || pattern.includes('debugger')) {
-                      console.log('🐛 Scanning for debug code...');
-                    } else if (pattern.includes('TODO') || pattern.includes('FIXME')) {
-                      console.log('📌 Finding TODOs and FIXMEs...');
-                    }
-                  } else if (input.tool_name === 'Write') {
-                    console.log('✍️  Generating PR description...');
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ],
-
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`✅ PR description written to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ]
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  });
-
-  let startTime = Date.now();
-  let checklistComplete = false;
-  let hasErrors = false;
-
-  // Stream results
-  for await (const message of queryStream) {
-    switch (message.type) {
-      case 'assistant':
-        // Show assistant progress
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            const text = block.text;
-            // Show important findings
-            if (text.includes('Found:') || text.includes('Issue:') || text.includes('Warning:')) {
-              console.log(`\n⚠️  ${text.substring(0, 150)}...`);
-            } else if (text.includes('✅') || text.includes('Passed:')) {
-              console.log(`\n✅ ${text.substring(0, 120)}...`);
-            }
-          }
-        }
-        break;
-
-      case 'result':
-        checklistComplete = true;
-        const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log('\n' + '='.repeat(60));
-        if (message.subtype === 'success') {
-          console.log('✨ PR Review Checklist Generated!');
-          console.log('='.repeat(60));
-          console.log(`📄 Your PR description is ready at: ${outputPath}`);
-          console.log(`\n📊 Statistics:`);
-          console.log(`   Time: ${elapsedTime}s`);
-          console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`   Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-          if (message.usage.cache_read_input_tokens) {
-            console.log(`   Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-          }
-
-          console.log('\n💡 Tip: Review the checklist before creating your PR!');
-          console.log('💡 Use this as your PR description template.');
-        } else {
-          console.log('❌ Error generating checklist');
-          console.log('='.repeat(60));
-          console.log(`Error type: ${message.subtype}`);
-          hasErrors = true;
-        }
-        break;
-
-      case 'system':
-        if (message.subtype === 'init') {
-          console.log('🚀 Initializing PR Review Checklist Generator...');
-          console.log(`   Model: ${message.model}`);
-          console.log(`   Working Directory: ${message.cwd}\n`);
-        }
-        break;
-    }
-  }
-
-  if (!checklistComplete) {
-    console.log('\n⚠️  Checklist generation was interrupted.');
-    hasErrors = true;
-  }
-
-  if (hasErrors && strictMode) {
-    console.log('\n🚨 Strict mode: Exiting with error due to critical issues found.');
-    process.exit(1);
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-🔍 PR Review Checklist Generator
-
-Analyzes your changes and generates a comprehensive PR description with hygiene checks!
-
-Usage:
-  bun run agents/pr-review-checklist-generator.ts [options]
-
-Options:
-  --branch <name>        Target branch to analyze (default: current branch)
-  --base <name>          Base branch to compare against (default: main)
-  --output <path>        Output file path (default: ./PR_DESCRIPTION.md)
-  --skip-tests           Skip running the test suite
-  --skip-linting         Skip running the linter
-  --skip-formatting      Skip checking code formatting
-  --strict               Enable strict mode (fail on critical issues)
-  --help, -h             Show this help message
-
-Examples:
-  # Generate PR checklist for current branch
-  bun run agents/pr-review-checklist-generator.ts
-
-  # Analyze a specific branch
-  bun run agents/pr-review-checklist-generator.ts --branch feature/new-auth
-
-  # Compare against develop branch
-  bun run agents/pr-review-checklist-generator.ts --base develop
-
-  # Quick check without running tests
-  bun run agents/pr-review-checklist-generator.ts --skip-tests --skip-linting
-
-  # Strict mode - fail if critical issues found
-  bun run agents/pr-review-checklist-generator.ts --strict
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse options
-const options: PRChecklistOptions = {
-  baseBranch: 'main',
-  outputPath: './PR_DESCRIPTION.md',
-  skipTests: false,
-  skipLinting: false,
-  skipFormatting: false,
-  strictMode: false,
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Glob",
+  "Grep",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--branch':
-      options.branch = args[++i];
-      break;
-    case '--base':
-      options.baseBranch = args[++i];
-      break;
-    case '--output':
-      options.outputPath = args[++i];
-      break;
-    case '--skip-tests':
-      options.skipTests = true;
-      break;
-    case '--skip-linting':
-      options.skipLinting = true;
-      break;
-    case '--skip-formatting':
-      options.skipFormatting = true;
-      break;
-    case '--strict':
-      options.strictMode = true;
-      break;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ PR Review Checklist Generated!\n");
+    console.log(`📄 Your PR description is ready at: ${options.outputPath}`);
+    console.log("\n💡 Tip: Review the checklist before creating your PR!");
+    console.log("💡 Use this as your PR description template.");
   }
-}
 
-// Run the PR checklist generator
-runPRChecklistGenerator(options).catch((error) => {
-  console.error('❌ Fatal error:', error);
+  if (exitCode !== 0 && options.strictMode) {
+    console.log('\n🚨 Strict mode: Exiting with error due to critical issues found.');
+  }
+
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

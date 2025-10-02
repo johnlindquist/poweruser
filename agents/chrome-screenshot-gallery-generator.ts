@@ -1,95 +1,88 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface GalleryOptions { urls: string[]; outputDir?: string; }
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function generateGallery(options: GalleryOptions) {
-  const { urls, outputDir = './screenshots' } = options;
-  console.log('📸 Chrome Screenshot Gallery Generator\n');
-  console.log(`Pages: ${urls.length}`);
-  console.log(`Output: ${outputDir}\n`);
+interface GalleryOptions {
+  urls: string[];
+  outputDir: string;
+}
 
-  const prompt = `Generate screenshot gallery for these URLs: ${urls.join(', ')}. For each URL: open page, wait for load, take full-page screenshot saved to ${outputDir}/[sanitized-url].png. After all screenshots: generate ${outputDir}/index.html gallery page showing all screenshots in a grid with URL labels and links. Make gallery responsive and visually appealing with CSS.`;
+function printHelp(): void {
+  console.log(`
+📸 Chrome Screenshot Gallery Generator
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__take_screenshot', 'mcp__chrome-devtools__wait_for', 'Write', 'Bash', 'TodoWrite'],
-      permissionMode: 'acceptEdits',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    const url = (input.tool_input as any).url;
-                    console.log(`🌐 Opening: ${url}`);
-                  } else if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('📸 Capturing screenshot...');
-                  } else if (toolName === 'Write' && (input.tool_input as any).file_path?.endsWith('.html')) {
-                    console.log('🎨 Generating gallery HTML...');
-                  } else if (toolName === 'Bash') {
-                    console.log('📁 Creating output directory...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('✅ Screenshot saved');
-                  } else if (toolName === 'Write' && (input.tool_input as any).file_path?.endsWith('.html')) {
-                    console.log('✅ Gallery page created');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log(`\n✨ Gallery generation complete!`);
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 40,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+Usage:
+  bun run agents/chrome-screenshot-gallery-generator.ts <url1> <url2> [...] [options]
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n✅ Gallery generated: ${outputDir}/index.html`);
-    }
+Arguments:
+  urls                 One or more URLs to screenshot
+
+Options:
+  --output <dir>       Output directory (default: ./screenshots)
+  --help, -h           Show this help
+  `);
+}
+
+function parseOptions(): GalleryOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  if (positionals.length === 0) {
+    console.error('❌ Error: At least one URL is required');
+    printHelp();
+    process.exit(1);
+  }
+
+  const outputDir = typeof values.output === "string" ? values.output : "./screenshots";
+  return { urls: positionals, outputDir };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["output", "help", "h"] as const;
+  for (const key of agentKeys) {
+    if (key in values) delete values[key];
   }
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n📸 Chrome Screenshot Gallery Generator\n\nUsage:\n  bun run agents/chrome-screenshot-gallery-generator.ts <url1> <url2> [...] [--output <dir>]\n\nOptions:\n  --output <dir>    Output directory (default: ./screenshots)\n');
-  process.exit(0);
+const options = parseOptions();
+if (!options) process.exit(0);
+
+console.log('📸 Chrome Screenshot Gallery Generator\n');
+console.log(`Pages: ${options.urls.length}`);
+console.log(`Output: ${options.outputDir}\n`);
+
+const prompt = `Generate screenshot gallery for these URLs: ${options.urls.join(', ')}. For each URL: open page, wait for load, take full-page screenshot saved to ${options.outputDir}/[sanitized-url].png. After all screenshots: generate ${options.outputDir}/index.html gallery page showing all screenshots in a grid with URL labels and links. Make gallery responsive and visually appealing with CSS.`;
+
+const settings: Settings = {};
+const allowedTools = ["mcp__chrome-devtools__navigate_page", "mcp__chrome-devtools__new_page", "mcp__chrome-devtools__take_screenshot", "mcp__chrome-devtools__wait_for", "Write", "Bash", "TodoWrite"];
+const mcpConfig = { mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp@latest", "--isolated"] }}};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "mcp-config": JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "strict-mcp-config": true,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✨ Gallery generation complete!');
+    console.log(`📄 Gallery: ${options.outputDir}/index.html`);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
 }
-
-const urls = args.filter(arg => !arg.startsWith('--'));
-const options: GalleryOptions = { urls };
-const outputIndex = args.indexOf('--output');
-if (outputIndex !== -1 && args[outputIndex + 1]) options.outputDir = args[outputIndex + 1];
-
-generateGallery(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });

@@ -1,43 +1,94 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface MemoryLeakOptions { url: string; duration?: number; reportFile?: string; }
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function detectMemoryLeaks(options: MemoryLeakOptions) {
-  const { url, duration = 30, reportFile = 'memory-leak-report.md' } = options;
-  console.log('🧠 Chrome Memory Leak Detector\n');
-  console.log(`URL: ${url}`);
-  console.log(`Monitoring Duration: ${duration}s\n`);
+interface MemoryLeakOptions {
+  url: string;
+  duration: number;
+  reportFile: string;
+}
 
-  const prompt = `Monitor ${url} for memory leaks over ${duration} seconds. Open page, use JavaScript to monitor memory over time: check performance.memory, count detached DOM nodes, identify event listeners not cleaned up. Interact with page (open/close modals, navigate). Take multiple memory snapshots. Generate "${reportFile}" identifying: memory growth patterns, detached nodes, event listener leaks, potential closure leaks, and fixes.`;
+function printHelp(): void {
+  console.log(`
+🧠 Chrome Memory Leak Detector
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__evaluate_script', 'mcp__chrome-devtools__click', 'mcp__chrome-devtools__wait_for', 'Write', 'TodoWrite'],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 35,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+Usage:
+  bun run agents/chrome-memory-leak-detector.ts <url> [options]
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') console.log(`\n📄 Report: ${reportFile}`);
+Arguments:
+  url                  URL to monitor
+
+Options:
+  --duration <sec>     Monitoring duration in seconds (default: 30)
+  --report <file>      Report output file (default: memory-leak-report.md)
+  --help, -h           Show this help
+  `);
+}
+
+function parseOptions(): MemoryLeakOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error('❌ Error: URL is required');
+    printHelp();
+    process.exit(1);
+  }
+
+  const duration = typeof values.duration === "string" ? parseInt(values.duration) : 30;
+  const reportFile = typeof values.report === "string" ? values.report : "memory-leak-report.md";
+
+  return { url, duration, reportFile };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["duration", "report", "help", "h"] as const;
+  for (const key of agentKeys) {
+    if (key in values) delete values[key];
   }
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n🧠 Chrome Memory Leak Detector\n\nUsage:\n  bun run agents/chrome-memory-leak-detector.ts <url> [--duration <seconds>] [--report <file>]\n');
-  process.exit(0);
+const options = parseOptions();
+if (!options) process.exit(0);
+
+console.log('🧠 Chrome Memory Leak Detector\n');
+console.log(`URL: ${options.url}`);
+console.log(`Duration: ${options.duration}s`);
+console.log(`Report: ${options.reportFile}\n`);
+
+const prompt = `Monitor ${options.url} for memory leaks over ${options.duration} seconds. Open page, use JavaScript to monitor memory over time: check performance.memory, count detached DOM nodes, identify event listeners not cleaned up. Interact with page (open/close modals, navigate). Take multiple memory snapshots. Generate "${options.reportFile}" identifying: memory growth patterns, detached nodes, event listener leaks, potential closure leaks, and fixes.`;
+
+const settings: Settings = {};
+const allowedTools = ["mcp__chrome-devtools__navigate_page", "mcp__chrome-devtools__new_page", "mcp__chrome-devtools__evaluate_script", "mcp__chrome-devtools__click", "mcp__chrome-devtools__wait_for", "Write", "TodoWrite"];
+const mcpConfig = { mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp@latest", "--isolated"] }}};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "mcp-config": JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "strict-mcp-config": true,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ Memory leak detection complete!');
+    console.log(`📄 Report: ${options.reportFile}`);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
 }
-
-const options: MemoryLeakOptions = { url: args[0]! };
-const durationIndex = args.indexOf('--duration');
-if (durationIndex !== -1 && args[durationIndex + 1]) options.duration = parseInt(args[durationIndex + 1]!);
-const reportIndex = args.indexOf('--report');
-if (reportIndex !== -1 && args[reportIndex + 1]) options.reportFile = args[reportIndex + 1];
-
-detectMemoryLeaks(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });

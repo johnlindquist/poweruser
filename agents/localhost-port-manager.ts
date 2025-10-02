@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Localhost Port Manager
@@ -7,31 +7,93 @@
  * Scans for processes using development ports, kills zombie processes, and finds available ports.
  *
  * Usage:
- *   bun run agents/localhost-port-manager.ts [--port=3000] [--scan-all] [--dry-run]
+ *   bun run agents/localhost-port-manager.ts [--port=N] [--scan-all] [--dry-run]
  *
- * Options:
- *   --port=N      Check and manage a specific port (default: scan common ports)
- *   --scan-all    Scan all common development ports
- *   --dry-run     Show what would be done without actually killing processes
+ * Examples:
+ *   # Check common development ports
+ *   bun run agents/localhost-port-manager.ts
+ *
+ *   # Check a specific port
+ *   bun run agents/localhost-port-manager.ts --port=3000
+ *
+ *   # Scan all common ports
+ *   bun run agents/localhost-port-manager.ts --scan-all
+ *
+ *   # Dry run mode (show what would be done)
+ *   bun run agents/localhost-port-manager.ts --port=3000 --dry-run
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const scanAll = args.includes("--scan-all");
-const portArg = args.find((arg) => arg.startsWith("--port="));
-const targetPort = portArg ? parseInt(portArg.split("=")[1] || "0") : null;
+interface PortManagerOptions {
+  targetPort: number | null;
+  scanAll: boolean;
+  dryRun: boolean;
+}
 
-const commonPorts = [3000, 8080, 5173, 8000, 5432, 27017, 6379, 9000, 4200, 3001, 5000, 8888];
+const COMMON_PORTS = [3000, 8080, 5173, 8000, 5432, 27017, 6379, 9000, 4200, 3001, 5000, 8888];
 
-const prompt = `You are a Localhost Port Manager - a specialized agent that helps developers resolve port conflicts and manage development server ports efficiently.
+function printHelp(): void {
+  console.log(`
+🔌 Localhost Port Manager
+
+Usage:
+  bun run agents/localhost-port-manager.ts [options]
+
+Options:
+  --port <number>         Check and manage a specific port
+  --scan-all              Scan all common development ports
+  --dry-run               Show what would be done without killing processes
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/localhost-port-manager.ts
+  bun run agents/localhost-port-manager.ts --port 3000
+  bun run agents/localhost-port-manager.ts --scan-all
+  bun run agents/localhost-port-manager.ts --port 3000 --dry-run
+  `);
+}
+
+function parseOptions(): PortManagerOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawPort = values.port;
+  const targetPort = typeof rawPort === "string" || typeof rawPort === "number"
+    ? parseInt(String(rawPort))
+    : null;
+
+  if (targetPort !== null && (isNaN(targetPort) || targetPort < 1 || targetPort > 65535)) {
+    console.error("❌ Error: Invalid port number. Must be between 1 and 65535");
+    process.exit(1);
+  }
+
+  const scanAll = values["scan-all"] === true || values.scanAll === true;
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
+
+  return {
+    targetPort,
+    scanAll,
+    dryRun,
+  };
+}
+
+function buildPrompt(options: PortManagerOptions): string {
+  const { targetPort, scanAll, dryRun } = options;
+
+  return `You are a Localhost Port Manager - a specialized agent that helps developers resolve port conflicts and manage development server ports efficiently.
 
 Your task is to analyze port usage on this system and help resolve "port already in use" errors.
 
 ## Analysis Steps:
 
-1. **Identify target ports**: ${targetPort ? `Focus on port ${targetPort}` : scanAll ? `Scan all common development ports: ${commonPorts.join(", ")}` : `Scan common development ports: ${commonPorts.slice(0, 6).join(", ")}`}
+1. **Identify target ports**: ${targetPort ? `Focus on port ${targetPort}` : scanAll ? `Scan all common development ports: ${COMMON_PORTS.join(", ")}` : `Scan common development ports: ${COMMON_PORTS.slice(0, 6).join(", ")}`}
 2. **Check port availability**: Use lsof, netstat, or similar commands to find which processes are using these ports
 3. **Identify process details**: For each occupied port, get:
    - Process ID (PID)
@@ -95,63 +157,69 @@ Optionally create/update a .port-registry.json file in the project root to track
 - What services run on each port
 
 Start by scanning for port usage and generating the port management report.`;
+}
 
-async function main() {
-  console.log("🔌 Localhost Port Manager starting...\n");
-  console.log(`Configuration:`);
-  if (targetPort) {
-    console.log(`  - Target port: ${targetPort}`);
-  } else {
-    console.log(`  - Scanning common ports: ${scanAll ? "ALL" : "COMMON"}`);
-  }
-  console.log(`  - Dry run mode: ${dryRun ? "YES" : "NO"}`);
-  console.log();
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["port", "scan-all", "scanAll", "dry-run", "dryRun", "help", "h"] as const;
 
-  const result = query({
-    prompt,
-    options: {
-      permissionMode: dryRun ? "acceptEdits" : "default",
-      allowedTools: [
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "TodoWrite",
-      ],
-      maxTurns: 25,
-    },
-  });
-
-  // Stream the agent's responses
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      // Process text content
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n✅ Port analysis complete!");
-        console.log(`\nStatistics:`);
-        console.log(`  - Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`  - Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`  - Turns: ${message.num_turns}`);
-      } else if (message.subtype === "error_max_turns") {
-        console.error("\n❌ Error: Maximum turns reached");
-        process.exit(1);
-      } else {
-        console.error("\n❌ Error during execution");
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔌 Localhost Port Manager\n");
+if (options.targetPort) {
+  console.log(`Target port: ${options.targetPort}`);
+} else {
+  console.log(`Scanning: ${options.scanAll ? "All common ports" : "Common ports"}`);
+}
+console.log(`Mode: ${options.dryRun ? "Dry run" : "Active"}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.dryRun ? "acceptEdits" : "default",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Port analysis complete!");
+    if (options.dryRun) {
+      console.log("\n💡 This was a dry run - no processes were killed");
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review identified port conflicts");
+    console.log("2. Kill zombie processes if found");
+    console.log("3. Update project configuration if needed");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

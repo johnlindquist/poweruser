@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Quick Type Generator
@@ -24,10 +24,157 @@
  *   curl https://api.example.com/data | bun run agents/quick-type-generator.ts
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'fs';
+import { claude, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
-const SYSTEM_PROMPT = `You are a TypeScript type generation expert. Your job is to analyze JSON data and generate production-ready TypeScript types, Zod schemas, and mock data factories.
+interface QuickTypeOptions {
+  jsonInput: string;
+  typeName?: string;
+}
+
+function printHelp(): void {
+  console.log(`
+⚡ Quick Type Generator
+
+Usage:
+  bun run agents/quick-type-generator.ts [file] [options]
+
+Arguments:
+  file                    Optional path to JSON file (uses stdin if omitted)
+
+Options:
+  --type-name <name>      Custom type name (inferred from data if not provided)
+  --help, -h              Show this help
+
+Examples:
+  # From clipboard or paste
+  bun run agents/quick-type-generator.ts
+
+  # From a file
+  bun run agents/quick-type-generator.ts data.json
+
+  # From stdin with curl
+  curl https://api.example.com/data | bun run agents/quick-type-generator.ts
+
+  # With custom type name
+  bun run agents/quick-type-generator.ts data.json --type-name User
+  `);
+}
+
+async function readInput(filePath?: string): Promise<string> {
+  // If a file path is provided
+  if (filePath) {
+    try {
+      return readFileSync(filePath, 'utf-8');
+    } catch (error) {
+      console.error(`❌ Error reading file: ${filePath}`);
+      process.exit(1);
+    }
+  }
+
+  // Check if stdin has data
+  if (!process.stdin.isTTY) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString('utf-8');
+  }
+
+  // Prompt for input
+  console.log('📋 Paste your JSON data (press Ctrl+D when done):');
+  console.log('');
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+function parseOptions(): QuickTypeOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawTypeName = values['type-name'] || values.typeName;
+  const typeName = typeof rawTypeName === 'string' && rawTypeName.length > 0
+    ? rawTypeName
+    : undefined;
+
+  // Read JSON input synchronously first to validate
+  const jsonInput = '';  // Will be populated below
+
+  return {
+    jsonInput,
+    typeName,
+  };
+}
+
+function buildPrompt(options: QuickTypeOptions): string {
+  const typeNameHint = options.typeName
+    ? `\n\nUse "${options.typeName}" as the main type name.`
+    : '';
+
+  return `Generate production-ready TypeScript types, Zod schemas, and mock data factories for this JSON:
+
+\`\`\`json
+${options.jsonInput}
+\`\`\`
+
+Generate:
+1. TypeScript interfaces with JSDoc comments
+2. Zod schemas for runtime validation
+3. A mock data factory function
+
+Make it production-ready and include helpful comments. Infer sensible type names from the data structure.${typeNameHint}`.trim();
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ['type-name', 'typeName', 'help', 'h'] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log('⚡ Quick Type Generator\n');
+
+// Read JSON input
+const filePath = parsedArgs.positionals[0];
+const jsonInput = await readInput(filePath);
+
+// Update options with actual jsonInput
+options.jsonInput = jsonInput;
+
+// Validate JSON
+try {
+  JSON.parse(jsonInput);
+} catch (error) {
+  console.error('❌ Invalid JSON input');
+  console.error(error);
+  process.exit(1);
+}
+
+console.log('🔍 Analyzing JSON structure...\n');
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const systemPrompt = `You are a TypeScript type generation expert. Your job is to analyze JSON data and generate production-ready TypeScript types, Zod schemas, and mock data factories.
 
 ## Your Process:
 1. Parse and analyze the JSON structure
@@ -61,111 +208,29 @@ Provide three code blocks:
 Make the code production-ready - properly formatted, well-commented, and ready to paste into a project.
 Work fast - aim to complete in under 3 seconds!`;
 
-async function readInput(): Promise<string> {
-  const args = process.argv.slice(2);
+removeAgentFlags();
 
-  // If a file path is provided
-  if (args.length > 0 && args[0]) {
-    const filePath = args[0];
-    try {
-      return readFileSync(filePath, 'utf-8');
-    } catch (error) {
-      console.error(`❌ Error reading file: ${filePath}`);
-      process.exit(1);
-    }
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(settings),
+  allowedTools: '',  // No tools needed
+  'permission-mode': 'bypassPermissions',
+  'append-system-prompt': systemPrompt,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n' + '='.repeat(80));
+    console.log('✅ Types generated successfully!');
+    console.log('='.repeat(80));
+    console.log('\n💡 Usage tips:');
+    console.log('   • Copy the code blocks above into your project');
+    console.log('   • Install zod if needed: bun add zod');
+    console.log('   • For mocks, consider adding @faker-js/faker\n');
   }
-
-  // Check if stdin has data
-  if (!process.stdin.isTTY) {
-    const chunks: Buffer[] = [];
-    for await (const chunk of process.stdin) {
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks).toString('utf-8');
-  }
-
-  // Prompt for input
-  console.log('📋 Paste your JSON data (press Ctrl+D when done):');
-  console.log('');
-
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
-
-async function main() {
-  console.log('⚡ Quick Type Generator\n');
-
-  const jsonInput = await readInput();
-
-  // Validate JSON
-  try {
-    JSON.parse(jsonInput);
-  } catch (error) {
-    console.error('❌ Invalid JSON input');
-    console.error(error);
-    process.exit(1);
-  }
-
-  console.log('🔍 Analyzing JSON structure...\n');
-
-  const startTime = Date.now();
-
-  const result = query({
-    prompt: `Generate production-ready TypeScript types, Zod schemas, and mock data factories for this JSON:
-
-\`\`\`json
-${jsonInput}
-\`\`\`
-
-Generate:
-1. TypeScript interfaces with JSDoc comments
-2. Zod schemas for runtime validation
-3. A mock data factory function
-
-Make it production-ready and include helpful comments. Infer sensible type names from the data structure.`,
-    options: {
-      systemPrompt: SYSTEM_PROMPT,
-      model: 'claude-sonnet-4-5-20250929',
-      allowedTools: [],
-      permissionMode: 'bypassPermissions',
-      maxTurns: 3,
-    },
-  });
-
-  // Stream the response
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const content of message.message.content) {
-        if (content.type === 'text') {
-          console.log(content.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      const elapsed = Date.now() - startTime;
-
-      if (message.subtype === 'success') {
-        console.log('\n' + '='.repeat(80));
-        console.log('✅ Types generated successfully!');
-        console.log(`⏱️  Time: ${(elapsed / 1000).toFixed(2)}s (API: ${(message.duration_api_ms / 1000).toFixed(2)}s)`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔄 Turns: ${message.num_turns}`);
-        console.log('='.repeat(80));
-        console.log('\n💡 Usage tips:');
-        console.log('   • Copy the code blocks above into your project');
-        console.log('   • Install zod if needed: bun add zod');
-        console.log('   • For mocks, consider adding @faker-js/faker\n');
-      } else {
-        console.log('\n❌ Error during generation');
-        console.log(`⏱️  Time: ${(elapsed / 1000).toFixed(2)}s`);
-      }
-    }
-  }
-}
-
-main().catch((error) => {
-  console.error('Error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
   process.exit(1);
-});
+}

@@ -1,96 +1,94 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface FormFillerOptions { url: string; dataFile?: string; submit?: boolean; }
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function fillForm(options: FormFillerOptions) {
-  const { url, dataFile, submit = false } = options;
-  console.log('📝 Chrome Form Filler Bot\n');
-  console.log(`URL: ${url}`);
-  console.log(`Auto-submit: ${submit}\n`);
+interface FormFillerOptions {
+  url: string;
+  dataFile?: string;
+  submit: boolean;
+}
 
-  const prompt = `Fill out the form at ${url} with realistic test data. Open page, take snapshot, identify all form fields (text inputs, emails, passwords, dates, selects, checkboxes, radios, textareas). ${dataFile ? `Use data from ${dataFile}.` : 'Generate realistic test data: names (John Doe), emails (test@example.com), phones ((555) 123-4567), addresses, dates, passwords (meeting requirements).'} Use fill_form to fill all fields at once. ${submit ? 'After filling, click submit button.' : 'Do not submit, just fill fields.'} Report which fields were filled and with what data.`;
+function printHelp(): void {
+  console.log(`
+📝 Chrome Form Filler Bot
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__take_snapshot', 'mcp__chrome-devtools__fill', 'mcp__chrome-devtools__fill_form', 'mcp__chrome-devtools__click', 'mcp__chrome-devtools__evaluate_script', ...(dataFile ? ['Read'] : []), 'TodoWrite'],
-      permissionMode: 'bypassPermissions',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    console.log('🌐 Navigating to page...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_snapshot') {
-                    console.log('📸 Taking page snapshot...');
-                  } else if (toolName === 'mcp__chrome-devtools__fill_form') {
-                    console.log('✍️  Filling form fields...');
-                  } else if (toolName === 'mcp__chrome-devtools__click') {
-                    console.log('🖱️  Clicking submit button...');
-                  } else if (toolName === 'Read') {
-                    console.log('📄 Reading data file...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__fill_form') {
-                    console.log('✅ Form fields filled');
-                  } else if (toolName === 'mcp__chrome-devtools__click') {
-                    console.log('✅ Form submitted');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Form filling complete!');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 30,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+Usage:
+  bun run agents/chrome-form-filler-bot.ts <url> [options]
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log('\n✅ Form filled successfully');
-      if (message.result) console.log('\n' + message.result);
-    }
+Arguments:
+  url                  URL with form to fill
+
+Options:
+  --data <file>        JSON file with form data
+  --submit             Submit form after filling
+  --help, -h           Show this help
+  `);
+}
+
+function parseOptions(): FormFillerOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error('❌ Error: URL is required');
+    printHelp();
+    process.exit(1);
+  }
+
+  const dataFile = typeof values.data === "string" ? resolve(values.data) : undefined;
+  const submit = values.submit === true;
+
+  return { url, dataFile, submit };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["data", "submit", "help", "h"] as const;
+  for (const key of agentKeys) {
+    if (key in values) delete values[key];
   }
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n📝 Chrome Form Filler Bot\n\nUsage:\n  bun run agents/chrome-form-filler-bot.ts <url> [--data <file>] [--submit]\n\nOptions:\n  --data <file>    JSON file with form data\n  --submit         Submit form after filling\n');
-  process.exit(0);
+const options = parseOptions();
+if (!options) process.exit(0);
+
+console.log('📝 Chrome Form Filler Bot\n');
+console.log(`URL: ${options.url}`);
+if (options.dataFile) console.log(`Data file: ${options.dataFile}`);
+console.log(`Auto-submit: ${options.submit}\n`);
+
+const prompt = `Fill out the form at ${options.url} with realistic test data. Open page, take snapshot, identify all form fields (text inputs, emails, passwords, dates, selects, checkboxes, radios, textareas). ${options.dataFile ? `Use data from ${options.dataFile}.` : 'Generate realistic test data: names (John Doe), emails (test@example.com), phones ((555) 123-4567), addresses, dates, passwords (meeting requirements).'} Use fill_form to fill all fields at once. ${options.submit ? 'After filling, click submit button.' : 'Do not submit, just fill fields.'} Report which fields were filled and with what data.`;
+
+const settings: Settings = {};
+const allowedTools = ["mcp__chrome-devtools__navigate_page", "mcp__chrome-devtools__new_page", "mcp__chrome-devtools__take_snapshot", "mcp__chrome-devtools__fill", "mcp__chrome-devtools__fill_form", "mcp__chrome-devtools__click", "mcp__chrome-devtools__evaluate_script", ...(options.dataFile ? ["Read"] : []), "TodoWrite"];
+const mcpConfig = { mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp@latest", "--isolated"] }}};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "mcp-config": JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "strict-mcp-config": true,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✨ Form filling complete!');
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
 }
-
-const options: FormFillerOptions = { url: args[0]!, submit: args.includes('--submit') };
-const dataIndex = args.indexOf('--data');
-if (dataIndex !== -1 && args[dataIndex + 1]) options.dataFile = args[dataIndex + 1];
-
-fillForm(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });

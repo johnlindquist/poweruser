@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Git Branch Janitor
@@ -7,23 +7,84 @@
  * Identifies stale local and remote branches and helps clean them up safely.
  *
  * Usage:
- *   bun run agents/git-branch-janitor.ts [--dry-run] [--days=30] [--include-remote]
+ *   bun run agents/git-branch-janitor.ts [options]
  *
  * Options:
  *   --dry-run         Show what would be deleted without actually deleting
- *   --days=N          Consider branches stale after N days (default: 30)
+ *   --days <N>        Consider branches stale after N days (default: 30)
  *   --include-remote  Also analyze and suggest remote branch cleanup
+ *   --help, -h        Show this help
+ *
+ * Examples:
+ *   bun run agents/git-branch-janitor.ts
+ *   bun run agents/git-branch-janitor.ts --dry-run
+ *   bun run agents/git-branch-janitor.ts --days 60 --include-remote
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
-const includeRemote = args.includes("--include-remote");
-const daysArg = args.find((arg) => arg.startsWith("--days="));
-const staleDays = daysArg ? parseInt(daysArg.split("=")[1] || "30") : 30;
+interface BranchJanitorOptions {
+  dryRun: boolean;
+  staleDays: number;
+  includeRemote: boolean;
+}
 
-const prompt = `You are a Git Branch Janitor - a specialized agent that helps keep git repositories clean and organized.
+const DEFAULT_STALE_DAYS = 30;
+
+function printHelp(): void {
+  console.log(`
+🧹 Git Branch Janitor
+
+Usage:
+  bun run agents/git-branch-janitor.ts [options]
+
+Options:
+  --dry-run           Show what would be deleted without actually deleting
+  --days <N>          Consider branches stale after N days (default: ${DEFAULT_STALE_DAYS})
+  --include-remote    Also analyze and suggest remote branch cleanup
+  --help, -h          Show this help
+
+Examples:
+  bun run agents/git-branch-janitor.ts
+  bun run agents/git-branch-janitor.ts --dry-run
+  bun run agents/git-branch-janitor.ts --days 60 --include-remote
+  `);
+}
+
+function parseOptions(): BranchJanitorOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
+  const includeRemote = values["include-remote"] === true || values.includeRemote === true;
+
+  const rawDays = values.days;
+  const staleDays = typeof rawDays === "string" && rawDays.length > 0
+    ? parseInt(rawDays, 10)
+    : DEFAULT_STALE_DAYS;
+
+  if (isNaN(staleDays) || staleDays < 1) {
+    console.error("❌ Error: --days must be a positive number");
+    process.exit(1);
+  }
+
+  return {
+    dryRun,
+    staleDays,
+    includeRemote,
+  };
+}
+
+function buildPrompt(options: BranchJanitorOptions): string {
+  const { staleDays, includeRemote, dryRun } = options;
+
+  return `You are a Git Branch Janitor - a specialized agent that helps keep git repositories clean and organized.
 
 Your task is to analyze the git repository in the current directory and identify stale branches that can be safely cleaned up.
 
@@ -66,57 +127,61 @@ ${dryRun ? "## DRY RUN MODE\nYou are in dry-run mode. Show what WOULD be deleted
 - Always show what will be deleted before executing${!dryRun ? "\n- Ask for explicit confirmation before deleting branches" : ""}
 
 Start by analyzing the git repository and generating the cleanup report.`;
+}
 
-async function main() {
-  console.log("🧹 Git Branch Janitor starting...\n");
-  console.log(`Configuration:`);
-  console.log(`  - Stale threshold: ${staleDays} days`);
-  console.log(`  - Dry run mode: ${dryRun ? "YES" : "NO"}`);
-  console.log(`  - Include remote analysis: ${includeRemote ? "YES" : "NO"}`);
-  console.log();
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["dry-run", "dryRun", "days", "include-remote", "includeRemote", "help", "h"] as const;
 
-  const result = query({
-    prompt,
-    options: {
-      permissionMode: dryRun ? "acceptEdits" : "default",
-      allowedTools: [
-        "Bash",
-        "Read",
-        "Write",
-        "TodoWrite",
-      ],
-      maxTurns: 20,
-    },
-  });
-
-  // Stream the agent's responses
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      // Process text content
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n✅ Branch analysis complete!");
-        console.log(`\nStatistics:`);
-        console.log(`  - Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`  - Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`  - Turns: ${message.num_turns}`);
-      } else if (message.subtype === "error_max_turns") {
-        console.error("\n❌ Error: Maximum turns reached");
-        process.exit(1);
-      } else {
-        console.error("\n❌ Error during execution");
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🧹 Git Branch Janitor\n");
+console.log(`Stale threshold: ${options.staleDays} days`);
+console.log(`Dry run mode: ${options.dryRun ? "YES" : "NO"}`);
+console.log(`Include remote: ${options.includeRemote ? "YES" : "NO"}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.dryRun ? "acceptEdits" : "default",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Branch analysis complete!\n");
+    if (options.dryRun) {
+      console.log("🔍 Dry run complete - no branches were deleted");
+    } else {
+      console.log("🧹 Cleanup complete");
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

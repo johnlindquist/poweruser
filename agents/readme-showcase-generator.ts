@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * README Showcase Generator Agent
@@ -14,19 +14,79 @@
  * - Formats code examples with proper syntax highlighting
  * - Ensures consistent tone and style throughout
  *
- * Usage: bun run agents/readme-showcase-generator.ts [project-path]
+ * Usage:
+ *   bun run agents/readme-showcase-generator.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Generate showcase README in current directory
+ *   bun run agents/readme-showcase-generator.ts
+ *
+ *   # Generate for specific project
+ *   bun run agents/readme-showcase-generator.ts ./my-project
+ *
+ *   # Preserve existing README, output to new file
+ *   bun run agents/readme-showcase-generator.ts --preserve
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolve } from 'path';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function main() {
-  const args = process.argv.slice(2);
-  const projectPath = args.length > 0 ? resolve(args[0]!) : process.cwd();
+interface ReadmeGeneratorOptions {
+  projectPath: string;
+  preserveOriginal: boolean;
+}
 
-  console.log(`\n📝 Generating showcase README for: ${projectPath}\n`);
+const DEFAULT_PROJECT_PATH = process.cwd();
 
-  const prompt = `Analyze the project at "${projectPath}" and generate an enhanced, eye-catching README.md that will attract GitHub stars and contributors.
+function printHelp(): void {
+  console.log(`
+📝 README Showcase Generator
+
+Usage:
+  bun run agents/readme-showcase-generator.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project (default: current directory)
+
+Options:
+  --preserve              Preserve existing README.md, output to README-new.md
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/readme-showcase-generator.ts
+  bun run agents/readme-showcase-generator.ts ./my-project
+  bun run agents/readme-showcase-generator.ts --preserve
+  bun run agents/readme-showcase-generator.ts ./my-project --preserve
+  `);
+}
+
+function parseOptions(): ReadmeGeneratorOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const projectPath = positionals[0]
+    ? resolve(positionals[0])
+    : DEFAULT_PROJECT_PATH;
+
+  const preserveOriginal = values.preserve === true;
+
+  return {
+    projectPath,
+    preserveOriginal,
+  };
+}
+
+function buildPrompt(options: ReadmeGeneratorOptions): string {
+  const { projectPath, preserveOriginal } = options;
+  const outputFile = preserveOriginal ? "README-new.md" : "README.md";
+
+  return `Analyze the project at "${projectPath}" and generate an enhanced, eye-catching README.md that will attract GitHub stars and contributors.
 
 Your task:
 
@@ -98,43 +158,79 @@ Your task:
    - Use tables for API documentation if applicable
 
 5. **Output**
-   - Write the new README.md (or README-new.md if you want to preserve the old one)
+   - Write the new ${outputFile}${preserveOriginal ? " (preserving existing README.md)" : ""}
    - Provide a summary of what was generated
    - List suggestions for demo content to capture
 
 Important notes:
-- If a README.md already exists, preserve any unique content that should be kept
+- If a README.md already exists${preserveOriginal ? ", preserve it by writing to README-new.md" : ", analyze and enhance it while preserving unique content"}
 - Make the README stand out while remaining professional
 - Focus on clarity and ease of understanding for new users
 - Include real, working code examples based on the actual project code
-- Suggest where placeholder URLs should be updated (badges, demo links, etc.)`;
+- Suggest where placeholder URLs should be updated (badges, demo links, etc.)`.trim();
+}
 
-  const response = query({
-    prompt,
-    options: {
-      cwd: projectPath,
-      permissionMode: 'bypassPermissions',
-      allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
-      model: 'sonnet',
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["preserve", "help", "h"] as const;
 
-  for await (const message of response) {
-    if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ README showcase generation complete!\n');
-        console.log(message.result);
-        console.log('\n');
-      } else {
-        console.error('\n❌ Error during generation:');
-        console.error(message);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("📝 README Showcase Generator\n");
+console.log(`Project: ${options.projectPath}`);
+console.log(`Preserve original: ${options.preserveOriginal ? "Yes (output to README-new.md)" : "No (overwrite README.md)"}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Glob",
+  "Grep",
+  "Bash",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+// Change working directory to project path
+const originalCwd = process.cwd();
+process.chdir(options.projectPath);
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ README showcase generation complete!\n");
+    console.log("Next steps:");
+    console.log("1. Review the generated README");
+    console.log("2. Add screenshots/GIFs to showcase features");
+    console.log("3. Update badge URLs with real values");
+    console.log("4. Customize any generic sections");
+    console.log("5. Add to git and push to GitHub");
+  }
+  process.chdir(originalCwd);
+  process.exit(exitCode);
+} catch (error) {
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

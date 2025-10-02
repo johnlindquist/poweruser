@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Integration Data Seed Curator
@@ -27,8 +27,9 @@
  *   -h, --help               Show usage help
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface IntegrationSeedOptions {
   projectPath: string;
@@ -43,69 +44,96 @@ interface IntegrationSeedOptions {
   includeThirdPartyMocks: boolean;
 }
 
-function showHelp(): void {
-  console.log(`Integration Data Seed Curator\n\n` +
-    `Usage:\n` +
-    `  bun run agents/integration-data-seed-curator.ts [options]\n\n` +
-    `Options:\n` +
-    `  --project <path>         Project root to analyze (default: current directory)\n` +
-    `  --tickets <path>         Directory containing bug reports or support digests\n` +
-    `  --analytics <path>       Directory containing analytics exports or event logs\n` +
-    `  --feature-flags <path>   Optional feature flag configuration directory\n` +
-    `  --environment <name>     Target environment name (default: integration)\n` +
-    `  --seed-out <path>        Seed toolkit output path (default: ./seeds/integration-seed-kit.ts)\n` +
-    `  --report-out <path>      Markdown report output path (default: ./docs/integration-seed-report.md)\n` +
-    `  --slack-out <path>       Slack summary snippet output path (default: ./docs/integration-seed-slack.md)\n` +
-    `  --max-age <days>         Only consider incidents/events newer than N days (default: 21)\n` +
-    `  --no-third-party         Skip generating third-party mock scaffolding\n` +
-    `  -h, --help               Show this message\n`);
+const DEFAULT_ENVIRONMENT = "integration";
+const DEFAULT_SEED_OUT = "./seeds/integration-seed-kit.ts";
+const DEFAULT_REPORT_OUT = "./docs/integration-seed-report.md";
+const DEFAULT_SLACK_OUT = "./docs/integration-seed-slack.md";
+const DEFAULT_MAX_AGE = 21;
+
+function printHelp(): void {
+  console.log(`
+🌱 Integration Data Seed Curator
+
+Usage:
+  bun run agents/integration-data-seed-curator.ts [options]
+
+Options:
+  --project <path>         Project root to analyze (default: current directory)
+  --tickets <path>         Directory containing bug reports or support digests
+  --analytics <path>       Directory containing analytics exports or event logs
+  --feature-flags <path>   Optional feature flag configuration directory
+  --environment <name>     Target environment name (default: ${DEFAULT_ENVIRONMENT})
+  --seed-out <path>        Seed toolkit output path (default: ${DEFAULT_SEED_OUT})
+  --report-out <path>      Markdown report output path (default: ${DEFAULT_REPORT_OUT})
+  --slack-out <path>       Slack summary snippet output path (default: ${DEFAULT_SLACK_OUT})
+  --max-age <days>         Only consider incidents/events newer than N days (default: ${DEFAULT_MAX_AGE})
+  --no-third-party         Skip generating third-party mock scaffolding
+  --help, -h               Show this help
+
+Examples:
+  bun run agents/integration-data-seed-curator.ts
+  bun run agents/integration-data-seed-curator.ts --project ./my-app
+  bun run agents/integration-data-seed-curator.ts --tickets ./support --analytics ./data
+  bun run agents/integration-data-seed-curator.ts --environment staging --max-age 30
+  `);
 }
 
-function parseArgsFromArgv(argv: string[]): IntegrationSeedOptions | null {
-  const { values } = parseArgs({
-    args: argv,
-    options: {
-      help: { type: 'boolean', short: 'h', default: false },
-      project: { type: 'string', default: process.cwd() },
-      tickets: { type: 'string' },
-      analytics: { type: 'string' },
-      'feature-flags': { type: 'string' },
-      environment: { type: 'string', default: 'integration' },
-      'seed-out': { type: 'string', default: './seeds/integration-seed-kit.ts' },
-      'report-out': { type: 'string', default: './docs/integration-seed-report.md' },
-      'slack-out': { type: 'string', default: './docs/integration-seed-slack.md' },
-      'max-age': { type: 'string', default: '21' },
-      'no-third-party': { type: 'boolean', default: false },
-    },
-    strict: false,
-  });
+function parseOptions(): IntegrationSeedOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  if (values.help) {
-    showHelp();
+  if (help) {
+    printHelp();
     return null;
   }
 
-  const maxAge = Number.parseInt(values['max-age'] as string, 10);
-  const maxEventAgeDays = Number.isNaN(maxAge) ? 21 : maxAge;
+  const rawProject = values.project;
+  const rawTickets = values.tickets;
+  const rawAnalytics = values.analytics;
+  const rawFeatureFlags = values["feature-flags"];
+  const rawEnvironment = values.environment;
+  const rawSeedOut = values["seed-out"];
+  const rawReportOut = values["report-out"];
+  const rawSlackOut = values["slack-out"];
+  const rawMaxAge = values["max-age"];
+  const noThirdParty = values["no-third-party"] === true;
 
-  const options: IntegrationSeedOptions = {
-    projectPath: values.project as string,
-    ticketsPath: values.tickets as string | undefined,
-    analyticsPath: values.analytics as string | undefined,
-    featureFlagPath: values['feature-flags'] as string | undefined,
-    environmentName: values.environment as string,
-    seedScriptPath: values['seed-out'] as string,
-    reportPath: values['report-out'] as string,
-    slackPath: values['slack-out'] as string | undefined,
-    maxEventAgeDays,
-    includeThirdPartyMocks: !(values['no-third-party'] as boolean),
-  };
+  const projectPath = typeof rawProject === "string" && rawProject.length > 0
+    ? resolve(rawProject)
+    : process.cwd();
 
-  return options;
-}
+  const ticketsPath = typeof rawTickets === "string" && rawTickets.length > 0
+    ? resolve(rawTickets)
+    : undefined;
 
-function buildPrompt(options: IntegrationSeedOptions): string {
-  const {
+  const analyticsPath = typeof rawAnalytics === "string" && rawAnalytics.length > 0
+    ? resolve(rawAnalytics)
+    : undefined;
+
+  const featureFlagPath = typeof rawFeatureFlags === "string" && rawFeatureFlags.length > 0
+    ? resolve(rawFeatureFlags)
+    : undefined;
+
+  const environmentName = typeof rawEnvironment === "string" && rawEnvironment.length > 0
+    ? rawEnvironment
+    : DEFAULT_ENVIRONMENT;
+
+  const seedScriptPath = typeof rawSeedOut === "string" && rawSeedOut.length > 0
+    ? rawSeedOut
+    : DEFAULT_SEED_OUT;
+
+  const reportPath = typeof rawReportOut === "string" && rawReportOut.length > 0
+    ? rawReportOut
+    : DEFAULT_REPORT_OUT;
+
+  const slackPath = typeof rawSlackOut === "string" && rawSlackOut.length > 0
+    ? rawSlackOut
+    : undefined;
+
+  const maxAge = typeof rawMaxAge === "string" ? Number.parseInt(rawMaxAge, 10) : DEFAULT_MAX_AGE;
+  const maxEventAgeDays = Number.isNaN(maxAge) ? DEFAULT_MAX_AGE : maxAge;
+
+  return {
     projectPath,
     ticketsPath,
     analyticsPath,
@@ -115,27 +143,22 @@ function buildPrompt(options: IntegrationSeedOptions): string {
     reportPath,
     slackPath,
     maxEventAgeDays,
-    includeThirdPartyMocks,
-  } = options;
+    includeThirdPartyMocks: !noThirdParty,
+  };
+}
 
-  const ticketInfo = ticketsPath ? `Bug/support archives: ${ticketsPath}` : 'Bug/support archives: not provided (synthesize based on available repo context).';
-  const analyticsInfo = analyticsPath ? `Analytics exports: ${analyticsPath}` : 'Analytics exports: not provided (infer from code instrumentation).';
-  const flagInfo = featureFlagPath ? `Feature flag config: ${featureFlagPath}` : 'Feature flag config: discover in repo if present (look for config, YAML, or JSON files).';
-  const thirdPartyDirective = includeThirdPartyMocks
+function buildSystemPrompt(options: IntegrationSeedOptions): string {
+  const thirdPartyDirective = options.includeThirdPartyMocks
     ? 'Include third-party integrations and queue payload templates in the seed kit.'
     : 'Skip third-party mock scaffolding unless absolutely required by core workflows.';
 
-  return `You are the Integration Data Seed Curator for environment "${environmentName}".
-Project root: ${projectPath}
-${ticketInfo}
-${analyticsInfo}
-${flagInfo}
+  return `You are the Integration Data Seed Curator for environment "${options.environmentName}".
 
 Your mission: transform recent defect signals into a deterministic integration data refresh that mirrors production pain points without running any live seed commands.
 
 ## Investigation Goals
 1. **Incident Mining**
-   - Scan issue trackers, support digests, QA notes, and analytics funnels for incidents within the last ${maxEventAgeDays} days.
+   - Scan issue trackers, support digests, QA notes, and analytics funnels for incidents within the last ${options.maxEventAgeDays} days.
    - Cluster incidents by workflow (e.g., subscription upgrade, checkout, onboarding) and capture frequency + severity.
    - Identify the essential data artifacts each workflow needs (users, orders, feature flags, background jobs, third-party tokens).
 
@@ -145,15 +168,15 @@ Your mission: transform recent defect signals into a deterministic integration d
    - Inspect feature flag configuration and environment settings that gate those workflows.
 
 3. **Seed Kit Architecture**
-   - Design a modular TypeScript seed toolkit and write it to "${seedScriptPath}" using the \`Write\` tool.
+   - Design a modular TypeScript seed toolkit and write it to "${options.seedScriptPath}" using the \`Write\` tool.
    - The toolkit should export a helper named buildIntegrationSeedPlan() that:
-     * Outlines ordered phases (reset, core data, edge cases, queues, ${includeThirdPartyMocks ? 'third-party mocks, ' : ''}post-checks).
+     * Outlines ordered phases (reset, core data, edge cases, queues, ${options.includeThirdPartyMocks ? 'third-party mocks, ' : ''}post-checks).
      * Provides idempotent operations (truncate/insert, upserts, queue enqueue stubs).
      * Documents required environment variables and safety guards.
    - Provide inline TODO markers when manual decisions are required.
 
 4. **Environment Parity Audit**
-   - Produce a markdown report at "${reportPath}" summarizing:
+   - Produce a markdown report at "${options.reportPath}" summarizing:
      * Top workflows covered and why they matter.
      * Schema or configuration mismatches that require human follow-up.
      * Test coverage gaps and proposed regression scenarios.
@@ -161,7 +184,7 @@ Your mission: transform recent defect signals into a deterministic integration d
    - Recommend validation commands (SQL queries, API smoke tests) to confirm seeds landed correctly.
 
 5. **Stakeholder Broadcast**
-   - Draft a Slack-ready update${slackPath ? ` at "${slackPath}"` : ''} written in 4-6 bullet points:
+   - Draft a Slack-ready update${options.slackPath ? ` at "${options.slackPath}"` : ''} written in 4-6 bullet points:
      * What changed
      * What QA/product should verify
      * When to rerun the seed kit
@@ -178,97 +201,147 @@ Your mission: transform recent defect signals into a deterministic integration d
 ## Delivery Format
 - Stream findings conversationally for the operator.
 - Ensure generated files are well-commented, type-safe, and align with existing project conventions when detectable.
-- Close with a concise checklist of recommended next actions for the human operator.
-`;
+- Close with a concise checklist of recommended next actions for the human operator.`;
 }
 
-async function runIntegrationDataSeedCurator(options: IntegrationSeedOptions): Promise<void> {
-  const prompt = buildPrompt(options);
-  const additionalDirectories = [
-    options.ticketsPath,
-    options.analyticsPath,
-    options.featureFlagPath,
-  ].filter((value): value is string => Boolean(value));
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "project",
+    "tickets",
+    "analytics",
+    "feature-flags",
+    "environment",
+    "seed-out",
+    "report-out",
+    "slack-out",
+    "max-age",
+    "no-third-party",
+    "help",
+    "h"
+  ] as const;
 
-  console.log('🌱 Integration Data Seed Curator\n');
-  console.log(`Project root: ${options.projectPath}`);
-  console.log(`Target environment: ${options.environmentName}`);
-  console.log(`Seed toolkit output: ${options.seedScriptPath}`);
-  console.log(`Report output: ${options.reportPath}`);
-  if (options.slackPath) {
-    console.log(`Slack summary output: ${options.slackPath}`);
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
   }
-  console.log(`Incident lookback window: ${options.maxEventAgeDays} days`);
-  console.log(`Include third-party mocks: ${options.includeThirdPartyMocks ? 'yes' : 'no'}`);
-  if (additionalDirectories.length > 0) {
-    console.log(`Additional directories: ${additionalDirectories.join(', ')}`);
-  }
-  console.log();
+}
 
-  const stream = query({
-    prompt,
-    options: {
-      cwd: options.projectPath,
-      additionalDirectories,
-      allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash', 'TodoWrite', 'Task'],
-      maxTurns: 40,
-      agents: {
-        'incident-analyst': {
-          description: 'Synthesizes defect signals from support tickets, QA notes, and analytics funnels.',
-          tools: ['Read', 'Grep', 'Glob'],
-          prompt: 'Study support transcripts, issue templates, and analytics exports to identify the workflows that recently failed and capture concrete reproduction data.',
-          model: 'haiku',
-        },
-        'fixture-cartographer': {
-          description: 'Maps ORM models, fixtures, and migrations for workflows the analyst surfaces.',
-          tools: ['Read', 'Grep', 'Glob', 'Bash'],
-          prompt: 'Discover the database schemas, factories, and background job producers that power the targeted workflows. Highlight schema drift or missing relationships.',
-          model: 'sonnet',
-        },
-        'seed-architect': {
-          description: 'Designs the TypeScript seed toolkit and supporting docs.',
-          tools: ['Read', 'Write', 'TodoWrite'],
-          prompt: 'Translate the mapped workflows into a deterministic seed plan. Focus on idempotence, environment safety, and rich inline documentation.',
-          model: 'sonnet',
-        },
-      },
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🌱 Integration Data Seed Curator\n");
+console.log(`Project root: ${options.projectPath}`);
+console.log(`Target environment: ${options.environmentName}`);
+console.log(`Seed toolkit output: ${options.seedScriptPath}`);
+console.log(`Report output: ${options.reportPath}`);
+if (options.slackPath) {
+  console.log(`Slack summary output: ${options.slackPath}`);
+}
+console.log(`Incident lookback window: ${options.maxEventAgeDays} days`);
+console.log(`Include third-party mocks: ${options.includeThirdPartyMocks ? "yes" : "no"}`);
+console.log("");
+
+const ticketInfo = options.ticketsPath
+  ? `Bug/support archives: ${options.ticketsPath}`
+  : 'Bug/support archives: not provided (synthesize based on available repo context).';
+const analyticsInfo = options.analyticsPath
+  ? `Analytics exports: ${options.analyticsPath}`
+  : 'Analytics exports: not provided (infer from code instrumentation).';
+const flagInfo = options.featureFlagPath
+  ? `Feature flag config: ${options.featureFlagPath}`
+  : 'Feature flag config: discover in repo if present (look for config, YAML, or JSON files).';
+
+const prompt = `Project root: ${options.projectPath}
+${ticketInfo}
+${analyticsInfo}
+${flagInfo}`;
+
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const additionalDirectories = [
+  options.ticketsPath,
+  options.analyticsPath,
+  options.featureFlagPath,
+].filter((value): value is string => Boolean(value));
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Grep",
+  "Glob",
+  "Bash",
+  "TodoWrite",
+  "Task",
+];
+
+// Define agents for the Task tool
+const agentsConfig = {
+  agents: {
+    "incident-analyst": {
+      description: "Synthesizes defect signals from support tickets, QA notes, and analytics funnels.",
+      tools: ["Read", "Grep", "Glob"],
+      prompt: "Study support transcripts, issue templates, and analytics exports to identify the workflows that recently failed and capture concrete reproduction data.",
+      model: "haiku",
     },
-  });
+    "fixture-cartographer": {
+      description: "Maps ORM models, fixtures, and migrations for workflows the analyst surfaces.",
+      tools: ["Read", "Grep", "Glob", "Bash"],
+      prompt: "Discover the database schemas, factories, and background job producers that power the targeted workflows. Highlight schema drift or missing relationships.",
+      model: "sonnet",
+    },
+    "seed-architect": {
+      description: "Designs the TypeScript seed toolkit and supporting docs.",
+      tools: ["Read", "Write", "TodoWrite"],
+      prompt: "Translate the mapped workflows into a deterministic seed plan. Focus on idempotence, environment safety, and rich inline documentation.",
+      model: "sonnet",
+    },
+  },
+};
 
-  for await (const message of stream) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    }
+removeAgentFlags();
 
-    if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ Integration data seed curation complete!');
-        console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`Turns: ${message.num_turns}`);
-        console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-      } else {
-        console.error('\n❌ The agent did not finish successfully.');
-        process.exitCode = 1;
-      }
-    }
-  }
+// Change to project directory
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const parsed = parseArgsFromArgv(args);
-  if (!parsed) {
-    return;
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify({ ...settings, ...agentsConfig }),
+  allowedTools: allowedTools.join(" "),
+  "append-system-prompt": systemPrompt,
+  "permission-mode": "default",
+  ...(additionalDirectories.length > 0 ? { "add-dir": additionalDirectories } : {}),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Integration data seed curation complete!\n");
+    console.log(`📄 Seed toolkit: ${options.seedScriptPath}`);
+    console.log(`📄 Report: ${options.reportPath}`);
+    if (options.slackPath) {
+      console.log(`📄 Slack summary: ${options.slackPath}`);
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the generated seed toolkit");
+    console.log("2. Check the audit report for schema mismatches");
+    console.log("3. Validate environment configuration");
+    console.log("4. Test the seed kit in a safe environment");
   }
-
-  await runIntegrationDataSeedCurator(parsed);
-}
-
-main().catch((error) => {
-  console.error('Fatal error while running Integration Data Seed Curator:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+} finally {
+  // Restore original cwd
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+}

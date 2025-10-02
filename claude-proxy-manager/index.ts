@@ -4,16 +4,19 @@ import { spawn, type Subprocess } from "bun";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { randomUUID } from "crypto";
 
 interface ProxyConfig {
   host: string;
   port: number;
+  webPort: number;
+  webPassword?: string;
   useWebUI: boolean;
+  showProxyOutput: boolean;
 }
 
 class ClaudeProxyManager {
   private mitmproxyProcess?: Subprocess;
-  private claudeProcess?: Subprocess;
   private config: ProxyConfig;
   private caCertPath: string;
 
@@ -21,7 +24,10 @@ class ClaudeProxyManager {
     this.config = {
       host: config.host || "127.0.0.1",
       port: config.port || 8080,
-      useWebUI: config.useWebUI !== false, // default to true
+      webPort: config.webPort || 8081,
+      webPassword: config.webPassword,
+      useWebUI: config.useWebUI ?? true,
+      showProxyOutput: config.showProxyOutput ?? false,
     };
     this.caCertPath = join(homedir(), ".mitmproxy", "mitmproxy-ca-cert.pem");
   }
@@ -38,16 +44,19 @@ class ClaudeProxyManager {
 
   private async ensureCACertificate(): Promise<void> {
     if (existsSync(this.caCertPath)) {
-      console.log("✅ CA certificate already exists");
       return;
     }
 
     console.log("🔐 Generating mitmproxy CA certificate...");
+    console.log("   (This only happens once)");
     const proc = spawn([
       "mitmdump",
       "--listen-host", this.config.host,
       "--listen-port", this.config.port.toString(),
-    ]);
+    ], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
     // Wait a bit for certificate generation
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -56,14 +65,27 @@ class ClaudeProxyManager {
     await proc.exited;
 
     if (existsSync(this.caCertPath)) {
-      console.log("✅ CA certificate generated successfully");
+      console.log("✅ CA certificate generated successfully\n");
     } else {
       throw new Error("Failed to generate CA certificate");
     }
   }
 
+  private async checkProxyRunning(): Promise<boolean> {
+    try {
+      const response = await fetch(`http://${this.config.host}:${this.config.port}`, {
+        method: "GET",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async startProxy(): Promise<void> {
     const command = this.config.useWebUI ? "mitmweb" : "mitmproxy";
+    const webPassword = this.config.webPassword || randomUUID();
+
     const args = [
       "--listen-host", this.config.host,
       "--listen-port", this.config.port.toString(),
@@ -71,58 +93,64 @@ class ClaudeProxyManager {
 
     if (this.config.useWebUI) {
       args.push("--web-host", this.config.host);
-      args.push("--no-web-open-browser"); // Don't auto-open browser
+      args.push("--web-port", String(this.config.webPort));
+      args.push("--no-web-open-browser");
       args.push("--set", "web_open_browser=false");
-      args.push("--set", "webui_auth=false"); // Disable web UI authentication
+      args.push("--set", `web_password=${webPassword}`);
     }
 
     console.log(`🚀 Starting ${command}...`);
 
     this.mitmproxyProcess = spawn([command, ...args], {
-      stdout: "inherit",
-      stderr: "inherit",
+      stdout: this.config.showProxyOutput ? "inherit" : "pipe",
+      stderr: this.config.showProxyOutput ? "inherit" : "pipe",
     });
 
-    // Wait for proxy to start
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
     if (this.config.useWebUI) {
-      console.log(`🌐 Web UI available at: http://${this.config.host}:8081`);
+      const url = `http://${this.config.host}:${this.config.webPort}/?token=${encodeURIComponent(webPassword)}`;
+      console.log(`\n🌐 mitmweb UI: ${url}`);
+
+      try {
+        spawn(["open", url], { stdout: "pipe", stderr: "pipe" });
+        console.log("   Opening in browser...");
+      } catch (error) {
+        // Silently fail if open command not available
+      }
     }
-    console.log(`📡 Proxy listening on: ${this.config.host}:${this.config.port}`);
+    console.log(`✅ Proxy listening on: ${this.config.host}:${this.config.port}\n`);
   }
 
-  private async startClaude(args: string[] = []): Promise<void> {
-    const env = {
-      ...process.env,
-      NODE_EXTRA_CA_CERTS: this.caCertPath,
-      HTTPS_PROXY: `http://${this.config.host}:${this.config.port}`,
-      HTTP_PROXY: `http://${this.config.host}:${this.config.port}`,
-      NO_PROXY: "localhost,127.0.0.1,.local",
-      ANTHROPIC_LOG: "debug", // Optional: can be removed if too verbose
-    };
+  private async generateAndCopyEnvVars(): Promise<void> {
+    const envCommand = `NODE_EXTRA_CA_CERTS="${this.caCertPath}" HTTPS_PROXY="http://${this.config.host}:${this.config.port}" HTTP_PROXY="http://${this.config.host}:${this.config.port}" NO_PROXY="localhost,127.0.0.1,.local"`;
 
-    console.log("\n🔧 Claude Code environment:");
-    console.log(`   HTTP_PROXY:  ${env.HTTP_PROXY}`);
-    console.log(`   HTTPS_PROXY: ${env.HTTPS_PROXY}`);
-    console.log(`   NO_PROXY:    ${env.NO_PROXY}`);
-    console.log(`   CA Cert:     ${env.NODE_EXTRA_CA_CERTS}`);
-    console.log("\n🚀 Launching Claude Code...\n");
+    // Copy to clipboard
+    try {
+      const proc = spawn(["pbcopy"], {
+        stdin: "pipe",
+      });
+      proc.stdin?.write(envCommand);
+      proc.stdin?.end();
+      await proc.exited;
+    } catch (error) {
+      // Silently fail if pbcopy not available
+    }
 
-    this.claudeProcess = spawn(["claude", ...args], {
-      env,
-      stdout: "inherit",
-      stderr: "inherit",
-      stdin: "inherit",
-    });
-
-    console.log("💡 Tips:");
-    console.log("  - Run '/status' in Claude Code to verify proxy settings");
-    console.log("  - Watch proxy terminal/web UI to see intercepted traffic");
-    console.log("  - Press Ctrl+C to stop both proxy and Claude Code\n");
+    console.log("📋 Environment variables for Claude:\n");
+    console.log(envCommand);
+    console.log("\n📋 Command copied to clipboard!");
+    console.log("\n🚀 To start Claude in another terminal:");
+    console.log("   1. Open a new terminal");
+    console.log("   2. Paste the command (Cmd+V)");
+    console.log("   3. Run: claude");
+    console.log("\n💡 Tips:");
+    console.log("  - Keep this terminal open to keep the proxy running");
+    console.log("  - Use the mitmweb UI above to inspect traffic");
+    console.log("  - Press Ctrl+C here to stop the proxy\n");
   }
 
-  public async run(claudeArgs: string[] = []): Promise<void> {
+  public async run(): Promise<void> {
     console.log("🔧 Claude Code Proxy Inspection Manager\n");
 
     // Check if mitmproxy is installed
@@ -135,33 +163,28 @@ class ClaudeProxyManager {
     // Ensure CA certificate exists
     await this.ensureCACertificate();
 
-    // Start proxy
+    // Start the proxy
     await this.startProxy();
 
-    // Start Claude Code
-    await this.startClaude(claudeArgs);
+    // Generate and display environment variables
+    await this.generateAndCopyEnvVars();
 
     // Handle cleanup
     process.on("SIGINT", () => this.cleanup());
     process.on("SIGTERM", () => this.cleanup());
 
-    // Wait for Claude to exit
-    await this.claudeProcess?.exited;
-    this.cleanup();
+    // Keep running until Ctrl+C
+    await new Promise(() => { }); // Wait forever
   }
 
   private cleanup(): void {
     console.log("\n🧹 Cleaning up...");
 
-    if (this.claudeProcess) {
-      this.claudeProcess.kill();
-    }
-
     if (this.mitmproxyProcess) {
       this.mitmproxyProcess.kill();
     }
 
-    console.log("✅ Done!");
+    console.log("✅ Proxy stopped!");
     process.exit(0);
   }
 }
@@ -171,48 +194,73 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
 
   // Parse options
-  let useWebUI = true;
   let port = 8080;
-  let claudeArgs: string[] = [];
+  let webPort = 8081;
+  let webPassword: string | undefined;
+  let useWebUI = true;
+  let showProxyOutput = false;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case "--port":
+        port = parseInt(args[++i] || "8080");
+        break;
+      case "--web-port":
+        webPort = parseInt(args[++i] || "8081");
+        break;
+      case "--web-password":
+        webPassword = args[++i];
+        break;
       case "--no-web":
         useWebUI = false;
         break;
-      case "--port":
-        port = parseInt(args[++i]);
+      case "--show-proxy-output":
+        showProxyOutput = true;
         break;
       case "--help":
         console.log(`
 Claude Code Proxy Manager
 
 Usage:
-  bun run index.ts [options] [-- claude-args]
+  bun run index.ts [options]
 
 Options:
-  --no-web      Use terminal UI instead of web UI (default: web UI)
-  --port PORT   Proxy port (default: 8080)
-  --help        Show this help message
+  --port PORT           Proxy port (default: 8080)
+  --web-port PORT       Web UI port for mitmweb (default: 8081)
+  --web-password TOKEN  Set a specific Web UI token (default: random UUID)
+  --no-web              Use terminal UI instead of web UI (default: web UI)
+  --show-proxy-output   Show mitmproxy output in terminal (default: hidden)
+  --help                Show this help message
 
 Examples:
-  bun run index.ts                    # Start with web UI
-  bun run index.ts --no-web           # Start with terminal UI
-  bun run index.ts --port 9090        # Use custom port
-  bun run index.ts -- --help          # Pass --help to Claude Code
+  bun run index.ts                        # Start proxy with web UI
+  bun run index.ts --port 9090            # Use custom proxy port
+  bun run index.ts --web-password mytoken # Use specific token
+  bun run index.ts --no-web               # Use terminal UI instead
+  bun run index.ts --show-proxy-output    # Show mitmproxy logs
+
+Workflow:
+  1. Run this script - proxy starts automatically
+  2. Environment variables are copied to clipboard
+  3. Open another terminal and paste them
+  4. Run: claude
+  5. Keep this terminal open (proxy keeps running)
+  6. Press Ctrl+C here when done to stop the proxy
 `);
         process.exit(0);
-      case "--":
-        claudeArgs = args.slice(i + 1);
-        i = args.length; // Exit loop
-        break;
       default:
-        if (!args[i - 1]?.includes("--port")) {
-          claudeArgs.push(args[i]);
-        }
+        console.error(`Unknown option: ${args[i]}`);
+        console.error("Run with --help for usage information");
+        process.exit(1);
     }
   }
 
-  const manager = new ClaudeProxyManager({ useWebUI, port });
-  await manager.run(claudeArgs);
+  const manager = new ClaudeProxyManager({
+    port,
+    webPort,
+    webPassword,
+    useWebUI,
+    showProxyOutput
+  });
+  await manager.run();
 }

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Output Style Builder Agent
@@ -10,7 +10,6 @@
  * - Compact structure with inline resource references
  * - 3-word maximum slug naming (lowercase, dash-separated)
  * - Strict research policy with source prioritization
- * - Uses Claude Agent SDK query() with streaming output
  *
  * Usage:
  *   bun run agents/output-style-builder.ts "Spec text here"
@@ -19,23 +18,21 @@
  * Options:
  *   --spec-file <path>   Path to file containing StyleSpec text (overrides inline spec)
  *   --slug <value>       Force slug for output file (default: AI chooses based on spec)
- *   --model <id>         Claude model id (default: claude-sonnet-4-5-20250929)
- *   --max-turns <n>      Maximum conversation turns (default: 26)
  *   --dry-run            Preview without writing files
  *   --help               Display usage information
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import os from 'os';
-import path from 'path';
-import { readFile } from 'fs/promises';
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 interface OutputStyleBuilderOptions {
   spec: string;
   slug?: string;
-  model: string;
-  maxTurns: number;
   dryRun: boolean;
+  specFile?: string;
 }
 
 const META_PROMPT = String.raw`SYSTEM (to the AI):
@@ -162,227 +159,168 @@ CURATED SOURCES LIST SUMMARY:
 
 Use these curated URLs to populate Resource Packs when relevant.`;
 
-async function runOutputStyleBuilder(options: OutputStyleBuilderOptions) {
-  const { spec, slug: providedSlug, model, maxTurns, dryRun } = options;
+function buildPrompt(options: OutputStyleBuilderOptions): string {
+  const { spec, slug: providedSlug } = options;
 
-  const homeDir = os.homedir();
-  const outputStylesDir = path.join(homeDir, '.claude', 'output-styles');
-
-  console.log('🧱 Output Style Builder launched.\n');
-  console.log(`📂 Output styles directory: ${outputStylesDir}`);
-  if (providedSlug) {
-    console.log(`🎯 Using provided slug: ${providedSlug}`);
-  }
-  console.log(`🧪 Dry run: ${dryRun}`);
-  console.log(`🧠 Model: ${model}`);
-  console.log(`🔁 Max turns: ${maxTurns}\n`);
+  const outputStylesDir = join(homedir(), '.claude', 'output-styles');
 
   const instructions = providedSlug
     ? `StyleSpec:\n${spec}\n\nProject conventions:\n- Use the slug: ${providedSlug}\n- Write the output style markdown to: ${outputStylesDir}/${providedSlug}.md\n- Include the Resource Pack section inline within the markdown file\n- Ensure ${outputStylesDir} exists (use Bash mkdir -p if needed).\n- Follow repository CLI/comment conventions.\n- After writing the file, provide a concise summary and the code block required by the meta prompt.`
     : `StyleSpec:\n${spec}\n\nProject conventions:\n- Choose an appropriate slug following the SLUG NAMING RULES (3 words max, lowercase, dash-separated)\n- Write the output style markdown to: ${outputStylesDir}/{{slug}}.md\n- Include the Resource Pack section inline within the markdown file\n- Ensure ${outputStylesDir} exists (use Bash mkdir -p if needed).\n- Follow repository CLI/comment conventions.\n- After writing the file, provide a concise summary and the code block required by the meta prompt.`;
 
-  const result = query({
-    prompt: instructions,
-    options: {
-      cwd: process.cwd(),
-      systemPrompt: META_PROMPT,
-      allowedTools: [
-        'Task',
-        'Glob',
-        'Read',
-        'Write',
-        'Edit',
-        'Bash',
-        'BashOutput',
-      ],
-      permissionMode: (dryRun ? 'default' : 'acceptEdits') as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan',
-      maxTurns,
-      model,
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if ((input.tool_name === 'Write' || input.tool_name === 'Edit') && dryRun) {
-                    return { continue: false, reason: 'Dry run active; skipping file modifications.' };
-                  }
-                  if (input.tool_name === 'Task') {
-                    console.log('🧭 Planning workflow...');
-                  }
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any)?.command ?? '';
-                    if (command.includes('mkdir')) {
-                      console.log('📂 Ensuring output directories exist...');
-                    }
-                  }
-                  if (input.tool_name === 'Write') {
-                    console.log('📝 Writing output style files...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n📘 Output style generation session complete.');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  let success = false;
-
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        success = true;
-        console.log('\n✅ Output style builder finished successfully.');
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`🔢 Turns: ${message.num_turns}`);
-        if (message.usage) {
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-        }
-        if (message.result) {
-          console.log(`\n${message.result}`);
-        }
-      } else {
-        console.error('\n❌ Output style builder failed:', message.subtype);
-      }
-    }
-  }
-
-  if (!success) {
-    console.warn('\n⚠️  No style files were confirmed. Review the logs above.');
-  }
+  return instructions;
 }
 
-function printHelp() {
+function printHelp(): void {
   console.log(`
-Output Style Builder Agent
+🧱 Output Style Builder
 
 Usage:
   bun run agents/output-style-builder.ts "<StyleSpec text>"
 
+Arguments:
+  spec                 StyleSpec text describing the output style to create
+
 Options:
-  --spec-file <path>   Path to file containing the StyleSpec text (overrides positional text)
-  --slug <value>       Explicit slug for output file (default: AI chooses based on spec)
-  --model <id>         Claude model id (default: claude-sonnet-4-5-20250929)
-  --max-turns <n>      Max conversation turns (default: 26)
+  --spec-file <path>   Path to file containing StyleSpec text (overrides positional)
+  --slug <value>       Explicit slug for output file (default: AI chooses)
   --dry-run            Preview actions without writing files
-  --help               Show this message
+  --help, -h           Show this help
 
 Examples:
-  # Inline spec - AI will choose slug like "nextjs-react-ts"
-  bun run agents/output-style-builder.ts "Web FE engineer for React + Next.js + TypeScript; production; prefer LTS"
+  # Inline spec - AI chooses slug
+  bun run agents/output-style-builder.ts "Web FE engineer for React + Next.js + TypeScript"
 
   # Spec file with explicit slug
-  bun run agents/output-style-builder.ts --spec-file ./specs/python-style.md --slug python-data
+  bun run agents/output-style-builder.ts --spec-file ./specs/python.md --slug python-data
 
   # Dry run preview
-  bun run agents/output-style-builder.ts "SRE style for Kubernetes" --dry-run
+  bun run agents/output-style-builder.ts "SRE for Kubernetes" --dry-run
 
-Note: Output file will be created at ~/.claude/output-styles/{slug}.md with inline Resource Pack
+Note: Output will be created at ~/.claude/output-styles/{slug}.md with inline Resource Pack
   `);
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+function parseOptions(): OutputStyleBuilderOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  if (args.includes('--help') || args.length === 0) {
+  if (help) {
     printHelp();
-    if (args.includes('--help') || args.length === 0) {
-      process.exit(0);
-    }
+    return null;
   }
+
+  const rawSpecFile = values["spec-file"] || values.specFile;
+  const rawSlug = values.slug;
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
 
   let specFile: string | undefined;
   let slug: string | undefined;
-  let model = 'claude-sonnet-4-5-20250929';
-  let maxTurns = 26;
-  let dryRun = false;
 
-  const positionalParts: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '--spec-file':
-        specFile = args[++i];
-        break;
-      case '--slug':
-        slug = args[++i];
-        break;
-      case '--model':
-        model = args[++i] ?? model;
-        break;
-      case '--max-turns': {
-        const value = Number(args[++i]);
-        if (!Number.isNaN(value) && value > 0) {
-          maxTurns = value;
-        }
-        break;
-      }
-      case '--dry-run':
-        dryRun = true;
-        break;
-      default:
-        if (arg && arg.startsWith('--')) {
-          console.warn(`⚠️  Ignoring unknown option: ${arg}`);
-        } else if (arg) {
-          positionalParts.push(arg);
-        }
-        break;
-    }
+  if (typeof rawSpecFile === "string" && rawSpecFile.length > 0) {
+    specFile = resolve(rawSpecFile);
   }
 
-  let specText = positionalParts.join(' ').trim();
-
-  if (specFile) {
-    try {
-      const fileText = await readFile(specFile, 'utf8');
-      specText = fileText.trim();
-    } catch (error) {
-      console.error(`❌ Unable to read spec file: ${specFile}`);
-      console.error(error);
-      process.exit(1);
-    }
+  if (typeof rawSlug === "string" && rawSlug.length > 0) {
+    slug = rawSlug;
   }
 
-  if (!specText) {
-    console.error('❌ StyleSpec text is required. Provide inline text or --spec-file.');
+  let specText = positionals.join(" ").trim();
+
+  if (!specText && !specFile) {
+    console.error("❌ Error: StyleSpec text or --spec-file is required");
+    printHelp();
     process.exit(1);
   }
 
-  await runOutputStyleBuilder({
+  return {
     spec: specText,
     slug,
-    model,
-    maxTurns,
     dryRun,
-  });
+    specFile,
+  };
 }
 
-if (import.meta.main) {
-  main().catch((error) => {
-    console.error('❌ Fatal error during output style build:', error);
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["spec-file", "specFile", "slug", "dry-run", "dryRun", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+// Load spec file if provided
+if (options.specFile) {
+  try {
+    const fileText = await readFile(options.specFile, "utf8");
+    options.spec = fileText.trim();
+  } catch (error) {
+    console.error(`❌ Unable to read spec file: ${options.specFile}`);
+    console.error(error);
     process.exit(1);
-  });
+  }
 }
 
-export { runOutputStyleBuilder };
+if (!options.spec) {
+  console.error("❌ StyleSpec text is required");
+  process.exit(1);
+}
+
+const outputStylesDir = join(homedir(), '.claude', 'output-styles');
+
+console.log("🧱 Output Style Builder\n");
+if (options.slug) console.log(`Slug: ${options.slug}`);
+console.log(`Output directory: ${outputStylesDir}`);
+console.log(`Dry run: ${options.dryRun ? "Yes" : "No"}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Task",
+  "Glob",
+  "Read",
+  "Write",
+  "Edit",
+  "Bash",
+  "BashOutput",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.dryRun ? "default" : "acceptEdits",
+  "append-system-prompt": META_PROMPT,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Output style creation complete!\n");
+    console.log(`📂 Output directory: ${outputStylesDir}`);
+    if (options.slug) {
+      console.log(`📄 File: ${options.slug}.md`);
+    }
+    console.log("\nNext steps:");
+    console.log("1. Review the generated output style");
+    console.log("2. Test it with: claude --output-style <slug>");
+    console.log("3. Adjust the Resource Pack as needed");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

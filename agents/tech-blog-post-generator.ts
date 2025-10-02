@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Tech Blog Post Generator Agent
@@ -19,32 +19,128 @@
  *   bun run agents/tech-blog-post-generator.ts --file src/api/users.ts
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type FocusType = 'all' | 'performance' | 'architecture' | 'bugfix' | 'feature';
+type ToneType = 'technical' | 'casual' | 'tutorial';
 
 interface BlogGeneratorOptions {
-  since?: string;
-  focus?: 'all' | 'performance' | 'architecture' | 'bugfix' | 'feature';
+  since: string;
+  focus: FocusType;
   file?: string;
-  outputPath?: string;
-  includeCodeSnippets?: boolean;
-  tone?: 'technical' | 'casual' | 'tutorial';
+  outputPath: string;
+  includeCodeSnippets: boolean;
+  tone: ToneType;
 }
 
-async function runTechBlogPostGenerator(options: BlogGeneratorOptions) {
-  const {
-    since = '2 weeks ago',
-    focus = 'all',
-    file,
-    outputPath = './blog-post-draft.md',
-    includeCodeSnippets = true,
-    tone = 'technical',
-  } = options;
+const DEFAULT_SINCE = '2 weeks ago';
+const DEFAULT_FOCUS: FocusType = 'all';
+const DEFAULT_OUTPUT = './blog-post-draft.md';
+const DEFAULT_TONE: ToneType = 'technical';
 
-  console.log('✍️  Tech Blog Post Generator Agent\n');
-  console.log(`Time Range: Since ${since}`);
-  console.log(`Focus: ${focus}`);
-  if (file) console.log(`File: ${file}`);
-  console.log(`Output: ${outputPath}\n`);
+function printHelp(): void {
+  console.log(`
+✍️  Tech Blog Post Generator
+
+Transforms your recent code changes into compelling technical blog posts!
+
+Usage:
+  bun run agents/tech-blog-post-generator.ts [options]
+
+Options:
+  --since <time>         Time range to analyze (default: "${DEFAULT_SINCE}")
+  --focus <type>         Focus area: all|performance|architecture|bugfix|feature (default: ${DEFAULT_FOCUS})
+  --file <path>          Focus on a specific file's changes
+  --output <path>        Output file path (default: ${DEFAULT_OUTPUT})
+  --tone <style>         Writing tone: technical|casual|tutorial (default: ${DEFAULT_TONE})
+  --no-code              Exclude code snippets from the post
+  --help, -h             Show this help message
+
+Examples:
+  # Generate a post from recent changes
+  bun run agents/tech-blog-post-generator.ts
+
+  # Focus on performance improvements
+  bun run agents/tech-blog-post-generator.ts --focus performance --since "1 month ago"
+
+  # Create a tutorial-style post about a specific file
+  bun run agents/tech-blog-post-generator.ts --file src/api/auth.ts --tone tutorial
+
+  # Generate a casual post about bug fixes
+  bun run agents/tech-blog-post-generator.ts --focus bugfix --tone casual
+
+  # Custom output location
+  bun run agents/tech-blog-post-generator.ts --output posts/my-new-post.md
+  `);
+}
+
+function parseOptions(): BlogGeneratorOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawSince = values.since;
+  const rawFocus = values.focus;
+  const rawFile = values.file;
+  const rawOutput = values.output;
+  const rawTone = values.tone;
+  const noCode = values["no-code"] === true || values.noCode === true;
+
+  const since = typeof rawSince === "string" && rawSince.length > 0
+    ? rawSince
+    : DEFAULT_SINCE;
+
+  const focus = typeof rawFocus === "string" && rawFocus.length > 0
+    ? (rawFocus as FocusType)
+    : DEFAULT_FOCUS;
+
+  if (!(['all', 'performance', 'architecture', 'bugfix', 'feature'] as const).includes(focus)) {
+    console.error("❌ Error: Invalid focus type. Must be all, performance, architecture, bugfix, or feature");
+    process.exit(1);
+  }
+
+  const file = typeof rawFile === "string" && rawFile.length > 0
+    ? resolve(rawFile)
+    : undefined;
+
+  const outputPath = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT;
+
+  const tone = typeof rawTone === "string" && rawTone.length > 0
+    ? (rawTone as ToneType)
+    : DEFAULT_TONE;
+
+  if (!(['technical', 'casual', 'tutorial'] as const).includes(tone)) {
+    console.error("❌ Error: Invalid tone. Must be technical, casual, or tutorial");
+    process.exit(1);
+  }
+
+  return {
+    since,
+    focus,
+    file,
+    outputPath,
+    includeCodeSnippets: !noCode,
+    tone,
+  };
+}
+
+function buildPrompt(options: BlogGeneratorOptions): string {
+  const {
+    since,
+    focus,
+    file,
+    outputPath,
+    includeCodeSnippets,
+    tone,
+  } = options;
 
   const focusDescription =
     focus === 'performance' ? 'performance optimizations and improvements' :
@@ -58,7 +154,7 @@ async function runTechBlogPostGenerator(options: BlogGeneratorOptions) {
     tone === 'tutorial' ? 'educational and step-by-step, perfect for teaching others' :
     'professional yet engaging, suitable for tech blogs and Medium';
 
-  const prompt = `You are a Tech Blog Post Generator. Your mission is to analyze recent code changes and craft a compelling technical blog post that showcases the developer's problem-solving skills and helps build their personal brand.
+  return `You are a Tech Blog Post Generator. Your mission is to analyze recent code changes and craft a compelling technical blog post that showcases the developer's problem-solving skills and helps build their personal brand.
 
 ## Your Task
 
@@ -173,207 +269,66 @@ Generate 3 tweet-sized hooks (280 chars) that could promote this post:
 - Include enough detail to be useful, but not overwhelming
 - Make it engaging - this should be fun to read!
 
-Start by analyzing the git history to find the best story to tell.`;
+Start by analyzing the git history to find the best story to tell.`.trim();
+}
 
-  const queryStream = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      model: 'claude-sonnet-4-5-20250929',
-      permissionMode: 'acceptEdits',
-      maxTurns: 35,
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["since", "focus", "file", "output", "tone", "no-code", "noCode", "help", "h"] as const;
 
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Glob',
-        'Grep',
-        'Write',
-        'TodoWrite'
-      ],
-
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  if (input.tool_name === 'Bash') {
-                    const command = (input.tool_input as any).command || '';
-                    if (command.includes('git log')) {
-                      console.log('📊 Analyzing git history...');
-                    } else if (command.includes('git diff')) {
-                      console.log('🔍 Examining code changes...');
-                    }
-                  } else if (input.tool_name === 'Read') {
-                    console.log('📖 Reading code files...');
-                  } else if (input.tool_name === 'Write') {
-                    console.log('✍️  Writing blog post draft...');
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ],
-
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  if (input.tool_name === 'Write') {
-                    const filePath = (input.tool_input as any).file_path;
-                    console.log(`✅ Blog post draft written to: ${filePath}`);
-                  }
-                }
-                return { continue: true };
-              }
-            ]
-          }
-        ]
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  });
-
-  let startTime = Date.now();
-  let postComplete = false;
-
-  // Stream results
-  for await (const message of queryStream) {
-    switch (message.type) {
-      case 'assistant':
-        // Show assistant progress
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            const text = block.text;
-            // Show interesting insights
-            if (text.includes('Found:') || text.includes('Story:') || text.includes('Title:')) {
-              console.log(`\n💭 ${text.substring(0, 150)}...`);
-            }
-          }
-        }
-        break;
-
-      case 'result':
-        postComplete = true;
-        const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log('\n' + '='.repeat(60));
-        if (message.subtype === 'success') {
-          console.log('✨ Blog Post Draft Generated!');
-          console.log('='.repeat(60));
-          console.log(`📝 Your blog post draft is ready at: ${outputPath}`);
-          console.log(`\n📊 Statistics:`);
-          console.log(`   Time: ${elapsedTime}s`);
-          console.log(`   Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`   Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-
-          if (message.usage.cache_read_input_tokens) {
-            console.log(`   Cache hits: ${message.usage.cache_read_input_tokens} tokens`);
-          }
-
-          console.log('\n💡 Next Steps:');
-          console.log('   1. Read and personalize the draft');
-          console.log('   2. Add your own voice and experiences');
-          console.log('   3. Include screenshots or diagrams if helpful');
-          console.log('   4. Publish to your blog, Medium, Dev.to, or LinkedIn!');
-        } else {
-          console.log('❌ Error generating blog post');
-          console.log('='.repeat(60));
-          console.log(`Error type: ${message.subtype}`);
-        }
-        break;
-
-      case 'system':
-        if (message.subtype === 'init') {
-          console.log('🚀 Initializing Tech Blog Post Generator...');
-          console.log(`   Model: ${message.model}`);
-          console.log(`   Working Directory: ${message.cwd}\n`);
-        }
-        break;
-    }
-  }
-
-  if (!postComplete) {
-    console.log('\n⚠️  Blog post generation was interrupted.');
   }
 }
 
-// CLI interface
-const args = process.argv.slice(2);
-
-if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-✍️  Tech Blog Post Generator
-
-Transforms your recent code changes into compelling technical blog posts!
-
-Usage:
-  bun run agents/tech-blog-post-generator.ts [options]
-
-Options:
-  --since <time>         Time range to analyze (default: "2 weeks ago")
-  --focus <type>         Focus area: all|performance|architecture|bugfix|feature (default: all)
-  --file <path>          Focus on a specific file's changes
-  --output <path>        Output file path (default: ./blog-post-draft.md)
-  --tone <style>         Writing tone: technical|casual|tutorial (default: technical)
-  --no-code              Exclude code snippets from the post
-  --help, -h             Show this help message
-
-Examples:
-  # Generate a post from recent changes
-  bun run agents/tech-blog-post-generator.ts
-
-  # Focus on performance improvements
-  bun run agents/tech-blog-post-generator.ts --focus performance --since "1 month ago"
-
-  # Create a tutorial-style post about a specific file
-  bun run agents/tech-blog-post-generator.ts --file src/api/auth.ts --tone tutorial
-
-  # Generate a casual post about bug fixes
-  bun run agents/tech-blog-post-generator.ts --focus bugfix --tone casual
-
-  # Custom output location
-  bun run agents/tech-blog-post-generator.ts --output posts/my-new-post.md
-  `);
+const options = parseOptions();
+if (!options) {
   process.exit(0);
 }
 
-// Parse options
-const options: BlogGeneratorOptions = {
-  since: '2 weeks ago',
-  focus: 'all',
-  outputPath: './blog-post-draft.md',
-  includeCodeSnippets: true,
-  tone: 'technical',
+console.log('✍️  Tech Blog Post Generator\n');
+console.log(`Time Range: Since ${options.since}`);
+console.log(`Focus: ${options.focus}`);
+if (options.file) console.log(`File: ${options.file}`);
+console.log(`Output: ${options.outputPath}`);
+console.log('');
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  'Bash',
+  'Read',
+  'Glob',
+  'Grep',
+  'Write',
+  'TodoWrite',
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'acceptEdits',
 };
 
-for (let i = 0; i < args.length; i++) {
-  switch (args[i]) {
-    case '--since':
-      options.since = args[++i];
-      break;
-    case '--focus':
-      options.focus = args[++i] as 'all' | 'performance' | 'architecture' | 'bugfix' | 'feature';
-      break;
-    case '--file':
-      options.file = args[++i];
-      break;
-    case '--output':
-      options.outputPath = args[++i];
-      break;
-    case '--tone':
-      options.tone = args[++i] as 'technical' | 'casual' | 'tutorial';
-      break;
-    case '--no-code':
-      options.includeCodeSnippets = false;
-      break;
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✨ Blog Post Draft Generated!\n');
+    console.log(`📝 Your blog post draft is ready at: ${options.outputPath}`);
+    console.log('\n💡 Next Steps:');
+    console.log('   1. Read and personalize the draft');
+    console.log('   2. Add your own voice and experiences');
+    console.log('   3. Include screenshots or diagrams if helpful');
+    console.log('   4. Publish to your blog, Medium, Dev.to, or LinkedIn!');
   }
-}
-
-// Run the generator
-runTechBlogPostGenerator(options).catch((error) => {
+  process.exit(exitCode);
+} catch (error) {
   console.error('❌ Fatal error:', error);
   process.exit(1);
-});
+}

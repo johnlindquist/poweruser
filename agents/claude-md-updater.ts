@@ -1,60 +1,78 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
-/**
- * CLAUDE.md Updater Agent
- *
- * This agent keeps the project's CLAUDE.md file up-to-date by analyzing
- * recent git commits and suggesting additions or modifications.
- *
- * Features:
- * - Finds the last time CLAUDE.md was modified.
- * - Analyzes commits since that date.
- * - Identifies new conventions, dependencies, or architectural changes.
- * - Suggests updates to CLAUDE.md to reflect the latest project state.
- *
- * Usage:
- *   bun run agents/claude-md-updater.ts [--dry-run] [--output]
- */
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+function printHelp(): void {
+  console.log(`
+🤖 CLAUDE.md Updater Agent
 
-async function main() {
-  console.log("🤖 CLAUDE.md Updater Agent");
+Usage:
+  bun run agents/claude-md-updater.ts [options]
 
-  const prompt = `
-You are an agent that keeps CLAUDE.md up-to-date.
+Options:
+  --dry-run               Show suggested updates without applying them
+  --days <num>            Number of days to look back (default: 30)
+  --help, -h              Show this help
+  `);
+}
 
-1.  **Find CLAUDE.md**: Look for \`CLAUDE.md\` or \`.claude/CLAUDE.md\`. If it doesn't exist, note that and suggest creating one based on the project.
-2.  **Find Last Modified Date**: Use git to find the last modification date of the CLAUDE.md file.
-    - If the file doesn't exist, use the last 30 days.
-3.  **Analyze Commits**: Get all commits since that date.
-4.  **Summarize Changes**: For the most significant commits, analyze the diffs to find changes relevant to a project's context memory. Look for:
-    - New dependencies (package.json, etc.)
-    - New build/test/lint commands (package.json)
-    - New architectural patterns or major features.
-    - New environment variables.
-    - Changes to contribution guidelines.
-5.  **Read CLAUDE.md**: Read the current content of the file.
-6.  **Suggest Updates**: Based on the analysis, generate and apply updates to \`CLAUDE.md\`. Use the 'replace' tool to add or modify sections. Explain why the changes are being made.
-    - If the file doesn't exist, create it with a good starting template.
-`;
+interface UpdaterOptions {
+  dryRun: boolean;
+  days: number;
+}
 
-  for await (const message of query({ prompt })) {
-    if (message.type === "assistant") {
-      for (const content of message.message.content) {
-        if (content.type === "text") {
-          console.log(content.text);
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n✅ CLAUDE.md update analysis complete!");
-        console.log(message.result);
-      } else {
-        console.error(`\n❌ Task failed: ${message.subtype}`);
-      }
-    }
+function parseOptions(): UpdaterOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const dryRun = values["dry-run"] === true;
+  const days = typeof values.days === "string" ? parseInt(values.days) : 30;
+
+  return { dryRun, days };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["dry-run", "days", "help", "h"] as const;
+  for (const key of agentKeys) {
+    if (key in values) delete values[key];
   }
 }
 
-main().catch(console.error);
+const options = parseOptions();
+if (!options) process.exit(0);
+
+console.log('🤖 CLAUDE.md Updater Agent\n');
+
+const prompt = `You are an agent that keeps CLAUDE.md up-to-date. Find CLAUDE.md or .claude/CLAUDE.md (if missing, suggest creating one). Use git to find last modification date (or use last ${options.days} days if file doesn't exist). Analyze commits since that date for: new dependencies, build/test commands, architectural patterns, environment variables, contribution guidelines. Read current CLAUDE.md content. ${options.dryRun ? 'Generate suggested updates without applying them.' : 'Apply updates to CLAUDE.md using Edit tool, explaining each change.'} If file doesn't exist, create it with a comprehensive template.`;
+
+const settings: Settings = {};
+const allowedTools = options.dryRun
+  ? ["Bash", "Glob", "Grep", "Read", "TodoWrite"]
+  : ["Bash", "Glob", "Grep", "Read", "Edit", "Write", "TodoWrite"];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.dryRun ? "default" : "acceptEdits",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ CLAUDE.md update analysis complete!');
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
+}

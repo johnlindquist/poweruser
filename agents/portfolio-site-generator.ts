@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Portfolio Site Generator
@@ -7,16 +7,66 @@
  * Analyzes your repositories, selects the best projects, and generates a modern, responsive site.
  *
  * Usage:
- *   bun run agents/portfolio-site-generator.ts [output-directory]
+ *   bun run agents/portfolio-site-generator.ts [output-directory] [options]
  *
  * Examples:
  *   bun run agents/portfolio-site-generator.ts
  *   bun run agents/portfolio-site-generator.ts ./my-portfolio
+ *   bun run agents/portfolio-site-generator.ts --help
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const SYSTEM_PROMPT = `You are a Portfolio Site Generator, an expert at showcasing developer work professionally.
+interface PortfolioOptions {
+  outputDir: string;
+}
+
+const DEFAULT_OUTPUT_DIR = "./portfolio";
+
+function printHelp(): void {
+  console.log(`
+🎨 Portfolio Site Generator
+
+Usage:
+  bun run agents/portfolio-site-generator.ts [output-directory] [options]
+
+Arguments:
+  output-directory        Directory for generated portfolio (default: ${DEFAULT_OUTPUT_DIR})
+
+Options:
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/portfolio-site-generator.ts
+  bun run agents/portfolio-site-generator.ts ./my-portfolio
+  `);
+}
+
+function parseOptions(): PortfolioOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawOutputDir = positionals[0];
+  const outputDir = typeof rawOutputDir === "string" && rawOutputDir.length > 0
+    ? resolve(rawOutputDir)
+    : DEFAULT_OUTPUT_DIR;
+
+  return {
+    outputDir,
+  };
+}
+
+function buildPrompt(options: PortfolioOptions): string {
+  const { outputDir } = options;
+
+  return `You are a Portfolio Site Generator, an expert at showcasing developer work professionally.
 
 Your mission is to:
 1. Analyze the current project and available repositories to identify showcase-worthy work
@@ -68,25 +118,7 @@ Generate a complete portfolio site with:
 5. README.md - Deployment instructions
 6. package.json - If using a framework (optional)
 
-## Tools at Your Disposal:
-
-- Bash: Run git commands to analyze repositories
-- Read: Analyze code, README files, package.json
-- Glob: Find project files and structure
-- Grep: Search for specific patterns in code
-- Write: Generate portfolio site files
-- WebSearch: Find portfolio best practices and design trends
-
-Work efficiently and create a professional, deployment-ready portfolio site.`;
-
-async function main() {
-  const args = process.argv.slice(2);
-  const outputDir = args[0] || './portfolio';
-
-  console.log('🎨 Portfolio Site Generator starting...\n');
-  console.log(`Output directory: ${outputDir}\n`);
-
-  const prompt = `Generate a professional portfolio website showcasing this developer's work.
+## Your Task:
 
 Please follow these steps:
 
@@ -131,61 +163,64 @@ Create a portfolio that:
 - Follows modern web best practices
 
 Focus on quality over quantity - a clean, professional site with 3-5 great projects beats a cluttered site with 20 mediocre ones.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: SYSTEM_PROMPT
-        },
-        model: 'claude-sonnet-4-5-20250929',
-        allowedTools: [
-          'Bash',
-          'Read',
-          'Glob',
-          'Grep',
-          'Write',
-          'WebSearch',
-          'TodoWrite'
-        ],
-        maxTurns: 30,
-        permissionMode: 'acceptEdits',
-      },
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["help", "h"] as const;
 
-    // Stream the results
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Print assistant messages
-        for (const content of message.message.content) {
-          if (content.type === 'text') {
-            console.log(content.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        // Print final results
-        console.log('\n' + '='.repeat(80));
-        if (message.subtype === 'success') {
-          console.log('✅ Portfolio site generated successfully!');
-          console.log(`\nOutput location: ${outputDir}`);
-          console.log(`Total turns: ${message.num_turns}`);
-          console.log(`Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`Cost: $${message.total_cost_usd.toFixed(4)}`);
-        } else {
-          console.log('⚠️  Generation completed with limitations');
-          console.log(`Reason: ${message.subtype}`);
-        }
-        console.log('='.repeat(80));
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-
-  } catch (error) {
-    console.error('❌ Error running Portfolio Site Generator:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🎨 Portfolio Site Generator\n");
+console.log(`Output directory: ${options.outputDir}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Glob",
+  "Grep",
+  "Write",
+  "WebSearch",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✨ Portfolio site generated successfully!\n");
+    console.log(`📂 Output location: ${options.outputDir}`);
+    console.log("\nNext steps:");
+    console.log("1. Review the generated site files");
+    console.log("2. Test the site locally (open index.html)");
+    console.log("3. Customize content and styling as needed");
+    console.log("4. Deploy to Vercel, Netlify, or GitHub Pages");
+    console.log("5. Set up a custom domain (optional)");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

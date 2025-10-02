@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Career Momentum Visualizer
@@ -18,18 +18,60 @@
  * - Suggests optimal times for deep work vs shipping features
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import path from 'path';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function main() {
-  const repoPath = process.argv[2] || process.cwd();
-  const absolutePath = path.resolve(repoPath);
+const SYSTEM_PROMPT = `
+You are an expert at analyzing git history and identifying developer growth patterns.
+You understand productivity psychology and can identify flow states, learning phases, and growth indicators.
+You're encouraging and frame everything positively while providing honest, actionable insights.
+You create beautiful, well-formatted reports that developers will be proud to share.
+`.trim();
 
-  console.log('🚀 Career Momentum Visualizer');
-  console.log('📊 Analyzing your developer journey...\n');
-  console.log(`Repository: ${absolutePath}\n`);
+function printHelp(): void {
+  console.log(`
+🚀 Career Momentum Visualizer
 
-  const prompt = `Analyze the git history of the repository at "${absolutePath}" and create a comprehensive developer growth story.
+Usage:
+  bun run agents/career-momentum-visualizer.ts [repo-path]
+
+Arguments:
+  repo-path            Path to repository (default: current directory)
+
+Options:
+  --help, -h           Show this help
+
+Description:
+  Analyzes git history to create a visual developer growth story with:
+  - Commit history analysis over the past year
+  - Flow state periods vs learning phases
+  - Skill evolution and technology adoption
+  - Growth trajectory visualizations
+  - Interview-ready talking points
+  - Optimal deep work vs shipping times
+
+Output:
+  Generates ~/career-momentum-report.html with comprehensive analysis
+  `);
+}
+
+const { values, positionals } = parsedArgs;
+const help = values.help === true || values.h === true;
+
+if (help) {
+  printHelp();
+  process.exit(0);
+}
+
+const repoPath = positionals[0] || process.cwd();
+const absolutePath = resolve(repoPath);
+
+console.log('🚀 Career Momentum Visualizer');
+console.log('📊 Analyzing your developer journey...\n');
+console.log(`Repository: ${absolutePath}\n`);
+
+const prompt = `Analyze the git history of the repository at "${absolutePath}" and create a comprehensive developer growth story.
 
 Follow these steps:
 
@@ -120,50 +162,42 @@ Follow these steps:
 
 Remember: Be encouraging and positive. Frame everything as growth and achievement. Make the developer feel proud of their work while providing actionable insights.`;
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: absolutePath,
-        allowedTools: ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'Write'],
-        permissionMode: 'bypassPermissions',
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: `
-You are an expert at analyzing git history and identifying developer growth patterns.
-You understand productivity psychology and can identify flow states, learning phases, and growth indicators.
-You're encouraging and frame everything positively while providing honest, actionable insights.
-You create beautiful, well-formatted reports that developers will be proud to share.
-          `.trim()
-        }
-      }
-    });
-
-    console.log('\n📈 Analysis in progress...\n');
-
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Career momentum analysis complete!');
-          console.log(`\n📊 Report generated at: ~/career-momentum-report.html`);
-          console.log(`\nOpen the report in your browser to see your full developer story.\n`);
-        } else {
-          console.error('\n❌ Analysis failed:', message);
-          process.exit(1);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('\n❌ Error analyzing career momentum:', error);
-    process.exit(1);
-  }
+// Change to repository directory if specified
+if (absolutePath !== process.cwd()) {
+  process.chdir(absolutePath);
 }
 
-main();
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Grep",
+  "Glob",
+  "WebSearch",
+  "Write",
+  "TodoWrite",
+];
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+  "append-system-prompt": SYSTEM_PROMPT,
+};
+
+console.log('📈 Analysis in progress...\n');
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ Career momentum analysis complete!');
+    console.log(`\n📊 Report generated at: ~/career-momentum-report.html`);
+    console.log(`\nOpen the report in your browser to see your full developer story.\n`);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('\n❌ Error analyzing career momentum:', error);
+  process.exit(1);
+}

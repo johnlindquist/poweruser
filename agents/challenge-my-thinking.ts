@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Challenge My Thinking Agent
@@ -23,32 +23,24 @@
  *   bun run agents/challenge-my-thinking.ts "Add user authentication to the app"
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-// Argument parsing
-function parseArgs(args: string[]): { initialIdea?: string; help: boolean } {
-  if (args.includes('--help') || args.includes('-h')) {
-    return { help: true };
-  }
-
-  const initialIdea = args.find(arg => !arg.startsWith('-'));
-
-  return { initialIdea, help: false };
-}
-
-const args = parseArgs(process.argv.slice(2));
-
-if (args.help) {
+function printHelp(): void {
   console.log(`
-Challenge My Thinking Agent
-
-Helps you fully explore and articulate ideas through deep questioning.
+💭 Challenge My Thinking
 
 Usage:
   bun run agents/challenge-my-thinking.ts "your idea/feature/fix"
-  bun run agents/challenge-my-thinking.ts --help
 
-The agent will guide you through a thorough exploration by:
+Arguments:
+  idea                 The idea, feature, or fix to explore
+
+Options:
+  --help, -h           Show this help
+
+Description:
+  Guides you through thorough exploration by:
   • Asking clarifying questions about your core concept
   • Probing for edge cases and failure scenarios
   • Exploring alternative approaches and trade-offs
@@ -59,18 +51,26 @@ The agent will guide you through a thorough exploration by:
 Example:
   bun run agents/challenge-my-thinking.ts "Add real-time collaboration features"
   `);
+}
+
+const { values, positionals } = parsedArgs;
+const help = values.help === true || values.h === true;
+
+if (help) {
+  printHelp();
   process.exit(0);
 }
 
-if (!args.initialIdea) {
-  console.error('Error: Please provide an initial idea to explore.');
+const initialIdea = positionals.join(" ").trim();
+
+if (!initialIdea) {
+  console.error('❌ Error: Please provide an initial idea to explore.');
   console.error('Usage: bun run agents/challenge-my-thinking.ts "your idea"');
   console.error('Run with --help for more information.');
   process.exit(1);
 }
 
-// Construct the system prompt
-const systemPrompt = `You are a Deep Think Refiner - an expert at helping people fully explore and articulate their ideas before implementation.
+const SYSTEM_PROMPT = `You are a Deep Think Refiner - an expert at helping people fully explore and articulate their ideas before implementation.
 
 Your role is to extract every relevant detail from the user's mind through systematic, probing questions. You should:
 
@@ -140,25 +140,31 @@ Your role is to extract every relevant detail from the user's mind through syste
 
 The user will provide their initial idea. Begin the deep exploration now.`;
 
-// Execute the query
-const result = query({
-  prompt: `I want to fully explore this idea/feature/fix before implementing it:\n\n${args.initialIdea}\n\nPlease help me think through every aspect of this thoroughly.`,
-  options: {
-    systemPrompt,
-    allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
-    permissionMode: 'acceptEdits',
-  },
-});
+const prompt = `I want to fully explore this idea/feature/fix before implementing it:\n\n${initialIdea}\n\nPlease help me think through every aspect of this thoroughly.`;
 
-// Stream and display results
-(async () => {
-  for await (const message of result) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    }
-  }
-})();
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Glob",
+  "Grep",
+  "WebSearch",
+  "WebFetch",
+  "TodoWrite",
+];
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "append-system-prompt": SYSTEM_PROMPT,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Error:', error);
+  process.exit(1);
+}

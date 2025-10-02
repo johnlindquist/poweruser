@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Release Gatekeeper Auditor
@@ -26,10 +26,10 @@
  *     --manifest infra/kubernetes/deploy.yaml
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { claude, parsedArgs } from './lib';
+import type { ClaudeFlags, Settings } from './lib';
 
 interface CliOptions {
   releaseRef: string;
@@ -48,28 +48,12 @@ function printHelp(): void {
   console.log(`\n🚦 Release Gatekeeper Auditor\n\nUsage:\n  bun run agents/release-gatekeeper-auditor.ts [options]\n\nOptions:\n  --release <git-ref>        Release candidate ref or branch (default: HEAD)\n  --prev <git-ref>           Previous stable ref for comparison (default: origin/main)\n  --report <file>            Output markdown report path (default: release-gatekeeper-audit.md)\n  --notes <path>             Release notes draft to validate\n  --changelog <path>         Changelog file to cross-check\n  --flags <dir>              Directory with feature flag definitions (repeatable)\n  --manifest <file>          Runtime or infrastructure manifest to diff (repeatable)\n  --incident <path>          Incident or bug log file/dir to review (repeatable)\n  --lookback <days>          History window for issues & rollbacks (default: 14)\n  --dry-run                  Request explicit dry-run rehearsal recommendations\n  --help                     Show this message\n\nExamples:\n  bun run agents/release-gatekeeper-auditor.ts --release HEAD --prev origin/main\n  bun run agents/release-gatekeeper-auditor.ts --release v2.3.0 --prev v2.2.4 --notes notes.md\n`);
 }
 
-function getCliOptions(argv: string[]): CliOptions {
-  const { positionals, values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      help: { type: 'boolean' },
-      release: { type: 'string' },
-      prev: { type: 'string' },
-      report: { type: 'string' },
-      notes: { type: 'string' },
-      changelog: { type: 'string' },
-      flags: { type: 'string', multiple: true },
-      manifest: { type: 'string', multiple: true },
-      incident: { type: 'string', multiple: true },
-      lookback: { type: 'string' },
-      'dry-run': { type: 'boolean' },
-    },
-  });
+function getCliOptions(): CliOptions | null {
+  const { positionals, values } = parsedArgs;
 
   if (values.help) {
     printHelp();
-    process.exit(0);
+    return null;
   }
 
   const releaseRef = (values.release as string | undefined) || positionals[0] || 'HEAD';
@@ -103,44 +87,68 @@ function formatPathList(label: string, items: string[]): string {
   if (items.length === 0) {
     return `${label}: none supplied`;
   }
-  return `${label}:\n${items.map((item) => `- ${path.resolve(item)}`).join('\n')}`;
+  return `${label}:\n${items.map((item) => `- ${resolve(item)}`).join('\n')}`;
 }
 
 function validateHint(pathValue: string | undefined, description: string): string {
   if (!pathValue) {
     return `${description}: not provided`;
   }
-  const fullPath = path.resolve(pathValue);
-  const exists = fs.existsSync(fullPath);
+  const fullPath = resolve(pathValue);
+  const exists = existsSync(fullPath);
   return `${description}: ${fullPath}${exists ? '' : ' (warning: missing)'}`;
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const options = getCliOptions(argv);
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    'release',
+    'prev',
+    'report',
+    'notes',
+    'changelog',
+    'flags',
+    'manifest',
+    'incident',
+    'lookback',
+    'dry-run',
+    'help',
+  ] as const;
 
-  console.log('🚦 Release Gatekeeper Auditor\n');
-  console.log(`📂 Repository: ${process.cwd()}`);
-  console.log(`🏷️  Release candidate ref: ${options.releaseRef}`);
-  console.log(`🪜 Previous stable ref: ${options.previousRef}`);
-  console.log(`🗓️  History lookback: ${options.lookbackDays} days`);
-  console.log(`📝 Report destination: ${options.reportFile}`);
-  if (options.dryRunPlan) {
-    console.log('🧪 Dry-run rehearsal recommendations requested');
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
   }
-  console.log('');
+}
 
-  const notesHint = validateHint(options.notesPath, 'Release notes');
-  const changelogHint = validateHint(options.changelogPath, 'Changelog');
-  const featureFlagHint = formatPathList('Feature flag sources', options.featureFlagDirs);
-  const manifestHint = formatPathList('Manifest files', options.manifestPaths);
-  const incidentsHint = formatPathList('Incident or bug logs', options.incidentLogs);
+const options = getCliOptions();
+if (!options) {
+  process.exit(0);
+}
 
-  const dryRunDirective = options.dryRunPlan
-    ? 'Include a dedicated **Dry-Run Rehearsal Plan** section describing pre-release drills, owners, and expected outcomes.'
-    : 'Recommend dry-run steps inline only when high-risk components are detected.';
+console.log('🚦 Release Gatekeeper Auditor\n');
+console.log(`📂 Repository: ${process.cwd()}`);
+console.log(`🏷️  Release candidate ref: ${options.releaseRef}`);
+console.log(`🪜 Previous stable ref: ${options.previousRef}`);
+console.log(`🗓️  History lookback: ${options.lookbackDays} days`);
+console.log(`📝 Report destination: ${options.reportFile}`);
+if (options.dryRunPlan) {
+  console.log('🧪 Dry-run rehearsal recommendations requested');
+}
+console.log('');
 
-  const prompt = `You are the Release Gatekeeper Auditor, a meticulous release manager bot hired to certify whether a build is safe to ship.
+const notesHint = validateHint(options.notesPath, 'Release notes');
+const changelogHint = validateHint(options.changelogPath, 'Changelog');
+const featureFlagHint = formatPathList('Feature flag sources', options.featureFlagDirs);
+const manifestHint = formatPathList('Manifest files', options.manifestPaths);
+const incidentsHint = formatPathList('Incident or bug logs', options.incidentLogs);
+
+const dryRunDirective = options.dryRunPlan
+  ? 'Include a dedicated **Dry-Run Rehearsal Plan** section describing pre-release drills, owners, and expected outcomes.'
+  : 'Recommend dry-run steps inline only when high-risk components are detected.';
+
+const prompt = `You are the Release Gatekeeper Auditor, a meticulous release manager bot hired to certify whether a build is safe to ship.
 
 ## Release Context
 - Candidate ref: ${options.releaseRef}
@@ -171,7 +179,7 @@ async function main(): Promise<void> {
 - Keep the report actionable and concise—release managers should act on it within minutes.
 
 ## Deliverables
-Write a markdown report to \\"${path.resolve(options.reportFile)}\\" using the following outline:
+Write a markdown report to \\"${resolve(options.reportFile)}\\" using the following outline:
 
 \`\`\`markdown
 # Release Gatekeeper Audit
@@ -254,95 +262,25 @@ If blockers or high-risk findings remain, capture them via the \`TodoWrite\` too
 End the session by outputting a concise (<=4 sentences) readiness verdict recap for the terminal.
 `;
 
-  const sdkOptions: Options = {
-    cwd: process.cwd(),
-    permissionMode: 'bypassPermissions',
-    allowedTools: ['Bash', 'Read', 'Grep', 'Glob', 'Write', 'TodoWrite'],
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code',
-    },
-    maxTurns: 70,
-    hooks: {
-      PreToolUse: [
-        {
-          hooks: [
-            async (input: any) => {
-              if (input.hook_event_name !== 'PreToolUse') return { continue: true };
-              switch (input.tool_name) {
-                case 'Bash': {
-                  const command = typeof input.tool_input?.command === 'string'
-                    ? input.tool_input.command
-                    : 'bash command';
-                  console.log(`🛠️  Running: ${command}`);
-                  break;
-                }
-                case 'Read':
-                  console.log('📖 Inspecting repository files');
-                  break;
-                case 'Write':
-                  console.log(`📝 Writing report to ${options.reportFile}`);
-                  break;
-                case 'TodoWrite':
-                  console.log('✅ Logging release follow-up tasks');
-                  break;
-                default:
-                  break;
-              }
-              return { continue: true };
-            },
-          ],
-        },
-      ],
-      PostToolUse: [
-        {
-          hooks: [
-            async (input: any) => {
-              if (input.hook_event_name !== 'PostToolUse') return { continue: true };
-              if (input.tool_name === 'Write') {
-                console.log('📄 Report content appended');
-              }
-              if (input.tool_name === 'TodoWrite') {
-                console.log('🗂️  Follow-up checklist updated');
-              }
-              return { continue: true };
-            },
-          ],
-        },
-      ],
-    },
-  };
+const settings: Settings = {};
 
-  try {
-    for await (const message of query({ prompt, options: sdkOptions })) {
-      if (message.type === 'assistant') {
-        for (const content of message.message.content) {
-          if (content.type === 'text') {
-            const text = content.text.trim();
-            if (text.length > 0) {
-              console.log(text);
-            }
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Release audit session complete');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`🔢 Tokens: ${message.usage.input_tokens} in / ${message.usage.output_tokens} out`);
-          console.log(`📄 Report saved to: ${options.reportFile}`);
-        } else {
-          console.error(`\n❌ Audit ended with subtype: ${message.subtype}`);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('\n❌ Error while running Release Gatekeeper Auditor:', error);
-    process.exit(1);
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(settings),
+  allowedTools: 'Bash Read Grep Glob Write TodoWrite',
+  'permission-mode': 'bypassPermissions',
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ Release audit session complete');
+    console.log(`📄 Report saved to: ${options.reportFile}`);
   }
-}
-
-main().catch((error) => {
-  console.error('❌ Unhandled error in Release Gatekeeper Auditor:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Error while running Release Gatekeeper Auditor:', error);
   process.exit(1);
-});
+}

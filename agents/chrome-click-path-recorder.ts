@@ -1,97 +1,96 @@
-#!/usr/bin/env bun
-import { query } from '@anthropic-ai/claude-agent-sdk';
+#!/usr/bin/env -S bun run
 
-interface ClickRecorderOptions { url: string; outputFile?: string; format?: 'markdown' | 'json'; }
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function recordClickPath(options: ClickRecorderOptions) {
-  const { url, outputFile, format = 'markdown' } = options;
-  const output = outputFile || `click-path.${format === 'json' ? 'json' : 'md'}`;
-  console.log('🖱️  Chrome Click Path Recorder\n');
-  console.log(`URL: ${url}`);
-  console.log(`Output: ${output}\n`);
+type OutputFormat = 'markdown' | 'json';
 
-  const prompt = `Record user interaction click path on ${url}. Open page, take initial snapshot. Set up JavaScript event listeners using evaluate_script to track: all click events with element details (tag, id, class, text content, xpath), timestamps, page navigation events, form submissions. Let page run for 30 seconds to capture interactions (or use wait_for). Collect all click events. Generate ${output} with: chronological list of clicks, element identifiers, screenshots at each step, visual flow diagram. Format as ${format === 'json' ? 'structured JSON' : 'markdown with emojis and clear steps'}.`;
+interface ClickRecorderOptions {
+  url: string;
+  outputFile: string;
+  format: OutputFormat;
+}
 
-  const result = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      mcpServers: { 'chrome-devtools': { type: 'stdio', command: 'npx', args: ['chrome-devtools-mcp@latest', '--isolated'] }},
-      allowedTools: ['mcp__chrome-devtools__navigate_page', 'mcp__chrome-devtools__new_page', 'mcp__chrome-devtools__take_snapshot', 'mcp__chrome-devtools__evaluate_script', 'mcp__chrome-devtools__wait_for', 'mcp__chrome-devtools__take_screenshot', 'Write', 'TodoWrite'],
-      permissionMode: 'acceptEdits',
-      hooks: {
-        PreToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PreToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__navigate_page') {
-                    console.log('🌐 Loading page...');
-                  } else if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('👂 Setting up click event listeners...');
-                  } else if (toolName === 'mcp__chrome-devtools__take_screenshot') {
-                    console.log('📸 Capturing interaction...');
-                  } else if (toolName === 'Write') {
-                    console.log('💾 Saving click path report...');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        PostToolUse: [
-          {
-            hooks: [
-              async (input) => {
-                if (input.hook_event_name === 'PostToolUse') {
-                  const toolName = input.tool_name;
-                  if (toolName === 'mcp__chrome-devtools__evaluate_script') {
-                    console.log('✅ Event listeners active');
-                  } else if (toolName === 'Write') {
-                    console.log('✅ Report saved');
-                  }
-                }
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-        SessionEnd: [
-          {
-            hooks: [
-              async () => {
-                console.log('\n✨ Click path recording complete!');
-                return { continue: true };
-              },
-            ],
-          },
-        ],
-      },
-      maxTurns: 25,
-      model: 'claude-sonnet-4-5-20250929',
-    },
-  });
+function printHelp(): void {
+  console.log(`
+🖱️  Chrome Click Path Recorder
 
-  for await (const message of result) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      console.log(`\n✅ Click path recorded: ${output}`);
-      if (message.result) console.log('\n' + message.result);
-    }
+Usage:
+  bun run agents/chrome-click-path-recorder.ts <url> [options]
+
+Arguments:
+  url                  URL to record
+
+Options:
+  --output <file>      Output file (default: click-path.md or click-path.json)
+  --format <type>      Output format: markdown, json (default: markdown)
+  --help, -h           Show this help
+  `);
+}
+
+function parseOptions(): ClickRecorderOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const url = positionals[0];
+  if (!url) {
+    console.error('❌ Error: URL is required');
+    printHelp();
+    process.exit(1);
+  }
+
+  const format = (typeof values.format === "string" ? values.format : "markdown") as OutputFormat;
+  const outputFile = typeof values.output === "string" ? values.output : `click-path.${format === 'json' ? 'json' : 'md'}`;
+
+  return { url, outputFile, format };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["output", "format", "help", "h"] as const;
+  for (const key of agentKeys) {
+    if (key in values) delete values[key];
   }
 }
 
-const args = process.argv.slice(2);
-if (args.length === 0 || args.includes('--help')) {
-  console.log('\n🖱️  Chrome Click Path Recorder\n\nUsage:\n  bun run agents/chrome-click-path-recorder.ts <url> [--output <file>] [--format markdown|json]\n\nOptions:\n  --output <file>      Output file\n  --format <type>      Output format (default: markdown)\n');
-  process.exit(0);
+const options = parseOptions();
+if (!options) process.exit(0);
+
+console.log('🖱️  Chrome Click Path Recorder\n');
+console.log(`URL: ${options.url}`);
+console.log(`Output: ${options.outputFile}`);
+console.log(`Format: ${options.format}\n`);
+
+const prompt = `Record user interaction click path on ${options.url}. Open page, take initial snapshot. Set up JavaScript event listeners using evaluate_script to track: all click events with element details (tag, id, class, text content, xpath), timestamps, page navigation events, form submissions. Let page run for 30 seconds to capture interactions (or use wait_for). Collect all click events. Generate ${options.outputFile} with: chronological list of clicks, element identifiers, screenshots at each step, visual flow diagram. Format as ${options.format === 'json' ? 'structured JSON' : 'markdown with emojis and clear steps'}.`;
+
+const settings: Settings = {};
+const allowedTools = ["mcp__chrome-devtools__navigate_page", "mcp__chrome-devtools__new_page", "mcp__chrome-devtools__take_snapshot", "mcp__chrome-devtools__evaluate_script", "mcp__chrome-devtools__wait_for", "mcp__chrome-devtools__take_screenshot", "Write", "TodoWrite"];
+const mcpConfig = { mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp@latest", "--isolated"] }}};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "mcp-config": JSON.stringify(mcpConfig),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "strict-mcp-config": true,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log(`\n✨ Click path recording complete!`);
+    console.log(`📄 Output: ${options.outputFile}`);
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
 }
-
-const options: ClickRecorderOptions = { url: args[0]! };
-const outputIndex = args.indexOf('--output');
-if (outputIndex !== -1 && args[outputIndex + 1]) options.outputFile = args[outputIndex + 1];
-const formatIndex = args.indexOf('--format');
-if (formatIndex !== -1 && args[formatIndex + 1]) options.format = args[formatIndex + 1] as any;
-
-recordClickPath(options).catch((err) => { console.error('❌ Fatal error:', err); process.exit(1); });

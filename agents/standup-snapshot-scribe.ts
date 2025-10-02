@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Standup Snapshot Scribe
@@ -7,12 +7,9 @@
  * recent activity, emerging blockers, and next-step suggestions.
  *
  * Usage:
- *   bun run agents/standup-snapshot-scribe.ts [--hours=24] [--format=slack|markdown|plain|json]
- *                                            [--team=TeamName] [--project=ProjectName]
- *                                            [--focus=infra,design] [--notes="extra context"]
- *                                            [--wins] [--prs]
+ *   bun run agents/standup-snapshot-scribe.ts [options]
  *
- * Flags:
+ * Options:
  *   --hours=N       Look back N hours when gathering commits (default: 24, max: 96)
  *   --format=TYPE   Output style: slack, markdown, plain, or json (default: slack)
  *   --team=NAME     Include the team label in the report metadata
@@ -21,83 +18,146 @@
  *   --notes=text    Extra human-provided context to weave into the summary
  *   --wins          Explicitly call out notable wins and quiet victories
  *   --prs           Prioritize open/merged PR insights when available
+ *   --help, -h      Show this help
+ *
+ * Examples:
+ *   bun run agents/standup-snapshot-scribe.ts
+ *   bun run agents/standup-snapshot-scribe.ts --hours=48 --format=markdown
+ *   bun run agents/standup-snapshot-scribe.ts --team="Platform Team" --project="Auth Service"
+ *   bun run agents/standup-snapshot-scribe.ts --focus=infra,api --wins --prs
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
 type OutputFormat = "slack" | "markdown" | "plain" | "json";
 
-const args = process.argv.slice(2);
+interface StandupOptions {
+  hoursLookback: number;
+  outputFormat: OutputFormat;
+  teamName: string;
+  projectName: string;
+  additionalNotes: string;
+  focusAreas: string[];
+  highlightWins: boolean;
+  elevatePullRequests: boolean;
+}
 
-const getArg = (flag: string): string | undefined => {
-  for (let index = 0; index < args.length; index += 1) {
-    const entry = args[index];
-    if (typeof entry === "undefined") {
-      continue;
-    }
-    if (entry === flag) {
-      const next = args[index + 1];
-      if (next && !next.startsWith("--")) {
-        return next;
-      }
-      return undefined;
-    }
-    if (entry.startsWith(`${flag}=`)) {
-      return entry.slice(flag.length + 1);
-    }
-  }
-  return undefined;
-};
+const DEFAULT_HOURS = 24;
+const DEFAULT_FORMAT: OutputFormat = "slack";
+const MAX_HOURS = 96;
 
-const parseList = (value?: string): string[] =>
-  value
+function printHelp(): void {
+  console.log(`
+🗞️  Standup Snapshot Scribe
+
+Usage:
+  bun run agents/standup-snapshot-scribe.ts [options]
+
+Options:
+  --hours=N       Look back N hours when gathering commits (default: ${DEFAULT_HOURS}, max: ${MAX_HOURS})
+  --format=TYPE   Output style: slack, markdown, plain, or json (default: ${DEFAULT_FORMAT})
+  --team=NAME     Include the team label in the report metadata
+  --project=NAME  Specify the primary project or code area to emphasize
+  --focus=list    Comma-separated focus areas to spotlight (e.g. infra,api,design)
+  --notes=text    Extra human-provided context to weave into the summary
+  --wins          Explicitly call out notable wins and quiet victories
+  --prs           Prioritize open/merged PR insights when available
+  --help, -h      Show this help
+
+Examples:
+  bun run agents/standup-snapshot-scribe.ts
+  bun run agents/standup-snapshot-scribe.ts --hours=48 --format=markdown
+  bun run agents/standup-snapshot-scribe.ts --team="Platform Team" --project="Auth Service"
+  bun run agents/standup-snapshot-scribe.ts --focus=infra,api --wins --prs
+  `);
+}
+
+function parseList(value?: string): string[] {
+  return value
     ? value
         .split(",")
         .map((segment) => segment.trim())
         .filter(Boolean)
     : [];
-
-const rawFormat = (getArg("--format") ?? "slack").toLowerCase();
-const allowedFormats: OutputFormat[] = ["slack", "markdown", "plain", "json"];
-const outputFormat: OutputFormat = (allowedFormats.includes(rawFormat as OutputFormat)
-  ? (rawFormat as OutputFormat)
-  : "slack");
-
-const rawHours = Number.parseInt(getArg("--hours") ?? "24", 10);
-const hoursLookback = Number.isFinite(rawHours)
-  ? Math.min(Math.max(rawHours, 1), 96)
-  : 24;
-
-const teamName = getArg("--team") ?? "";
-const projectName = getArg("--project") ?? "";
-const additionalNotes = getArg("--notes") ?? "";
-const focusAreas = parseList(getArg("--focus"));
-const highlightWins = args.includes("--wins");
-const elevatePullRequests = args.includes("--prs");
-
-const focusBullets = focusAreas.length
-  ? focusAreas.map((topic) => `- ${topic}`).join("\n")
-  : "- none specified";
-
-let formatInstructions: string;
-
-switch (outputFormat) {
-  case "markdown":
-    formatInstructions = `Return the final response as GitHub-flavored markdown with level-2 headings for each section (Yesterday, Today, Blockers, Wins, Next Steps). Use bullet lists for multi-item sections and bold key callouts.`;
-    break;
-  case "plain":
-    formatInstructions = `Return the final response as concise plain text with clear section labels followed by colon-separated summaries on single lines.`;
-    break;
-  case "json":
-    formatInstructions = `Return the final response as a compact JSON object with keys: team, project, generated_at, yesterday, today, blockers, wins, next_steps. Values should be arrays of strings except generated_at (ISO 8601 string) and metadata fields.`;
-    break;
-  case "slack":
-  default:
-    formatInstructions = `Return the final response formatted for Slack with bold section headers, emoji anchors (e.g. :sparkles:, :construction:, :warning:), and bullet items limited to 1-2 sentences each.`;
-    break;
 }
 
-const prompt = `You are the Standup Snapshot Scribe, a Claude Code agent that auto-compiles daily standup updates.
+function parseOptions(): StandupOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawFormat = typeof values.format === "string"
+    ? values.format.toLowerCase()
+    : DEFAULT_FORMAT;
+  const allowedFormats: OutputFormat[] = ["slack", "markdown", "plain", "json"];
+  const outputFormat: OutputFormat = allowedFormats.includes(rawFormat as OutputFormat)
+    ? (rawFormat as OutputFormat)
+    : DEFAULT_FORMAT;
+
+  const rawHours = typeof values.hours === "string"
+    ? Number.parseInt(values.hours, 10)
+    : DEFAULT_HOURS;
+  const hoursLookback = Number.isFinite(rawHours)
+    ? Math.min(Math.max(rawHours, 1), MAX_HOURS)
+    : DEFAULT_HOURS;
+
+  const teamName = typeof values.team === "string" ? values.team : "";
+  const projectName = typeof values.project === "string" ? values.project : "";
+  const additionalNotes = typeof values.notes === "string" ? values.notes : "";
+  const focusAreas = parseList(typeof values.focus === "string" ? values.focus : undefined);
+  const highlightWins = values.wins === true;
+  const elevatePullRequests = values.prs === true;
+
+  return {
+    hoursLookback,
+    outputFormat,
+    teamName,
+    projectName,
+    additionalNotes,
+    focusAreas,
+    highlightWins,
+    elevatePullRequests,
+  };
+}
+
+function buildFormatInstructions(format: OutputFormat): string {
+  switch (format) {
+    case "markdown":
+      return `Return the final response as GitHub-flavored markdown with level-2 headings for each section (Yesterday, Today, Blockers, Wins, Next Steps). Use bullet lists for multi-item sections and bold key callouts.`;
+    case "plain":
+      return `Return the final response as concise plain text with clear section labels followed by colon-separated summaries on single lines.`;
+    case "json":
+      return `Return the final response as a compact JSON object with keys: team, project, generated_at, yesterday, today, blockers, wins, next_steps. Values should be arrays of strings except generated_at (ISO 8601 string) and metadata fields.`;
+    case "slack":
+    default:
+      return `Return the final response formatted for Slack with bold section headers, emoji anchors (e.g. :sparkles:, :construction:, :warning:), and bullet items limited to 1-2 sentences each.`;
+  }
+}
+
+function buildPrompt(options: StandupOptions): string {
+  const {
+    hoursLookback,
+    outputFormat,
+    teamName,
+    projectName,
+    additionalNotes,
+    focusAreas,
+    highlightWins,
+    elevatePullRequests,
+  } = options;
+
+  const focusBullets = focusAreas.length
+    ? focusAreas.map((topic) => `- ${topic}`).join("\n")
+    : "- none specified";
+
+  const formatInstructions = buildFormatInstructions(outputFormat);
+
+  return `You are the Standup Snapshot Scribe, a Claude Code agent that auto-compiles daily standup updates.
 
 ## Mission
 Synthesize activity from the repository in the current working directory and produce a polished standup summary that the developer can paste into Slack, email, or status reports.
@@ -144,61 +204,75 @@ ${formatInstructions}
 - Respect repositories without CI or TODO files by inferring plans from the commit messages alone.
 - If information is missing, note the gap transparently instead of fabricating details.
 
-Craft the standup update now.`;
+Craft the standup update now.`.trim();
+}
 
-async function main() {
-  console.log("🗞️  Standup Snapshot Scribe starting...\n");
-  console.log("Configuration:");
-  console.log(`  - Lookback hours: ${hoursLookback}`);
-  console.log(`  - Output format: ${outputFormat}`);
-  if (teamName) {
-    console.log(`  - Team: ${teamName}`);
-  }
-  if (projectName) {
-    console.log(`  - Project: ${projectName}`);
-  }
-  if (focusAreas.length) {
-    console.log(`  - Focus areas: ${focusAreas.join(", ")}`);
-  }
-  if (additionalNotes) {
-    console.log(`  - Extra notes: ${additionalNotes}`);
-  }
-  console.log(`  - Spotlight wins: ${highlightWins ? "yes" : "no"}`);
-  console.log(`  - Elevate PRs: ${elevatePullRequests ? "yes" : "no"}`);
-  console.log();
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = [
+    "hours",
+    "format",
+    "team",
+    "project",
+    "focus",
+    "notes",
+    "wins",
+    "prs",
+    "help",
+    "h",
+  ] as const;
 
-  const result = query({
-    prompt,
-    options: {
-      allowedTools: ["Bash", "Read", "Write", "TodoWrite"],
-      permissionMode: "default",
-      includePartialMessages: false,
-      maxTurns: 18,
-    },
-  });
-
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === "result") {
-      if (message.subtype === "success") {
-        console.log("\n✅ Standup draft ready!");
-        console.log(`  Duration: ${(message.duration_ms / 1000).toFixed(2)}s`);
-        console.log(`  Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`  Turns: ${message.num_turns}`);
-      } else {
-        console.error("\n❌ Standup generation did not complete successfully.");
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🗞️  Standup Snapshot Scribe starting...\n");
+console.log("Configuration:");
+console.log(`  - Lookback hours: ${options.hoursLookback}`);
+console.log(`  - Output format: ${options.outputFormat}`);
+if (options.teamName) {
+  console.log(`  - Team: ${options.teamName}`);
+}
+if (options.projectName) {
+  console.log(`  - Project: ${options.projectName}`);
+}
+if (options.focusAreas.length) {
+  console.log(`  - Focus areas: ${options.focusAreas.join(", ")}`);
+}
+if (options.additionalNotes) {
+  console.log(`  - Extra notes: ${options.additionalNotes}`);
+}
+console.log(`  - Spotlight wins: ${options.highlightWins ? "yes" : "no"}`);
+console.log(`  - Elevate PRs: ${options.elevatePullRequests ? "yes" : "no"}`);
+console.log();
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: "Bash Read Write TodoWrite",
+  "permission-mode": "default",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Standup draft ready!");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

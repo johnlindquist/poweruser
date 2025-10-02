@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Merge Conflict Resolver Agent
@@ -11,27 +11,91 @@
  * - Flags complex conflicts with detailed explanations for manual review
  * - Runs tests after each resolution to verify correctness
  * - Generates a summary report of all conflicts and how they were resolved
+ *
+ * Usage:
+ *   bun run agents/merge-conflict-resolver.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Basic conflict analysis in current directory
+ *   bun run agents/merge-conflict-resolver.ts
+ *
+ *   # Analyze conflicts in specific directory
+ *   bun run agents/merge-conflict-resolver.ts /path/to/project
+ *
+ *   # Dry run mode - only analyze, don't modify
+ *   bun run agents/merge-conflict-resolver.ts --dry-run
+ *
+ *   # Auto-resolve simple conflicts
+ *   bun run agents/merge-conflict-resolver.ts --auto-resolve
+ *
+ *   # Skip test suite after resolution
+ *   bun run agents/merge-conflict-resolver.ts --skip-tests
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const DRY_RUN = process.argv.includes('--dry-run');
-const AUTO_RESOLVE = process.argv.includes('--auto-resolve');
-const RUN_TESTS = !process.argv.includes('--skip-tests');
+interface MergeConflictOptions {
+  projectPath: string;
+  dryRun: boolean;
+  autoResolve: boolean;
+  runTests: boolean;
+}
 
-async function main() {
-  console.log('🔀 Merge Conflict Resolver');
-  console.log(`📁 Project: ${PROJECT_PATH}`);
-  if (DRY_RUN) {
-    console.log('🔍 DRY RUN MODE - No changes will be made');
+const DEFAULT_REPORT_FILE = "MERGE_CONFLICT_REPORT.md";
+
+function printHelp(): void {
+  console.log(`
+🔀 Merge Conflict Resolver
+
+Usage:
+  bun run agents/merge-conflict-resolver.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project directory (default: current directory)
+
+Options:
+  --dry-run               Analyze only, don't modify files
+  --auto-resolve          Automatically resolve simple conflicts
+  --skip-tests            Skip running tests after resolution
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/merge-conflict-resolver.ts
+  bun run agents/merge-conflict-resolver.ts /path/to/project
+  bun run agents/merge-conflict-resolver.ts --dry-run
+  bun run agents/merge-conflict-resolver.ts --auto-resolve
+  bun run agents/merge-conflict-resolver.ts --auto-resolve --skip-tests
+  `);
+}
+
+function parseOptions(): MergeConflictOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
-  if (AUTO_RESOLVE) {
-    console.log('🤖 AUTO-RESOLVE MODE - Will automatically resolve simple conflicts');
-  }
-  console.log();
 
-  const systemPrompt = `You are a Merge Conflict Resolver agent that helps developers resolve git merge conflicts intelligently.
+  const projectPath = positionals[0] ? resolve(positionals[0]) : process.cwd();
+  const dryRun = values["dry-run"] === true || values.dryRun === true;
+  const autoResolve = values["auto-resolve"] === true || values.autoResolve === true;
+  const runTests = values["skip-tests"] !== true && values.skipTests !== true;
+
+  return {
+    projectPath,
+    dryRun,
+    autoResolve,
+    runTests,
+  };
+}
+
+function buildSystemPrompt(options: MergeConflictOptions): string {
+  const { autoResolve, runTests } = options;
+
+  return `You are a Merge Conflict Resolver agent that helps developers resolve git merge conflicts intelligently.
 
 Your task is to:
 1. Detect merge conflicts in the working directory
@@ -51,7 +115,7 @@ Your task is to:
    - MODERATE: Related logic changes that can be merged with clear strategy
    - COMPLEX: Conflicting logic that requires human judgment and domain knowledge
 
-4. For SIMPLE conflicts (only if --auto-resolve flag is set):
+4. For SIMPLE conflicts (only if auto-resolve is enabled):
    - Automatically resolve by merging both changes intelligently
    - Preserve functionality from both branches when possible
    - Apply consistent formatting
@@ -63,20 +127,24 @@ Your task is to:
    - Provide code snippets showing possible resolutions
    - Flag for manual review with clear explanations
 
-6. ${RUN_TESTS ? 'After resolving conflicts, run tests to verify correctness' : 'Skip running tests'}
+6. ${runTests ? 'After resolving conflicts, run tests to verify correctness' : 'Skip running tests'}
 
 7. Generate a comprehensive resolution report
 
-Use Bash for git operations, Read to analyze conflicted files, Grep to find related code, ${AUTO_RESOLVE ? 'Write to apply resolutions, ' : ''}and Write to generate the report.
+Use Bash for git operations, Read to analyze conflicted files, Grep to find related code, ${autoResolve ? 'Write to apply resolutions, ' : ''}and Write to generate the report.
 
 IMPORTANT:
-- Never auto-resolve conflicts unless --auto-resolve flag is set
+- Never auto-resolve conflicts unless auto-resolve is enabled
 - In dry-run mode, only analyze and suggest - don't modify files
 - Preserve the intent of both changes whenever possible
 - When in doubt, flag for manual review rather than making incorrect assumptions
 - Test after each resolution to catch breaking changes early`;
+}
 
-  const prompt = `Analyze and help resolve merge conflicts in: ${PROJECT_PATH}
+function buildPrompt(options: MergeConflictOptions): string {
+  const { projectPath, autoResolve, runTests, dryRun } = options;
+
+  return `Analyze and help resolve merge conflicts in: ${projectPath}
 
 1. First, check for merge conflicts:
    - Run 'git status' to see if there are any conflicted files
@@ -99,7 +167,7 @@ IMPORTANT:
    - MODERATE: Related changes that have a clear merge strategy
    - COMPLEX: Conflicting logic requiring human judgment
 
-4. ${AUTO_RESOLVE ? `For SIMPLE conflicts:
+4. ${autoResolve ? `For SIMPLE conflicts:
    - Automatically merge both changes
    - Remove conflict markers
    - Apply consistent formatting
@@ -116,7 +184,7 @@ IMPORTANT:
    - Provide code snippets for each strategy
    - Recommend which strategy to use and why
 
-${RUN_TESTS ? `
+${runTests ? `
 6. After resolving any conflicts:
    - Detect test command from package.json, Makefile, or common patterns
    - Run the test suite
@@ -124,7 +192,7 @@ ${RUN_TESTS ? `
    - If tests fail, suggest rolling back auto-resolutions
 ` : ''}
 
-7. Generate a markdown report saved as 'MERGE_CONFLICT_REPORT.md':
+7. Generate a markdown report saved as '${DEFAULT_REPORT_FILE}':
 
    # Merge Conflict Resolution Report
 
@@ -182,63 +250,104 @@ ${RUN_TESTS ? `
    3. Run tests to verify
    4. Complete merge with 'git commit'
 
-${DRY_RUN ? '\n**DRY RUN MODE** - No files were modified. Review the report and run without --dry-run to apply changes.' : ''}
+${dryRun ? '\n**DRY RUN MODE** - No files were modified. Review the report and run without --dry-run to apply changes.' : ''}
 
 Start by checking git status to detect conflicts.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Bash',
-          'Read',
-          'Grep',
-          'Glob',
-          ...(AUTO_RESOLVE && !DRY_RUN ? ['Write', 'Edit'] : ['Write']) // Only allow Edit for auto-resolve
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["dry-run", "dryRun", "auto-resolve", "autoResolve", "skip-tests", "skipTests", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Conflict analysis complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log('\n📄 Report saved to: MERGE_CONFLICT_REPORT.md');
-
-          if (DRY_RUN) {
-            console.log('💡 Run without --dry-run to apply suggested resolutions');
-          } else if (!AUTO_RESOLVE) {
-            console.log('💡 Run with --auto-resolve to automatically fix simple conflicts');
-          }
-        } else {
-          console.error('\n❌ Conflict resolution failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running merge conflict resolver:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log('🔀 Merge Conflict Resolver');
+console.log(`📁 Project: ${options.projectPath}`);
+if (options.dryRun) {
+  console.log('🔍 DRY RUN MODE - No changes will be made');
+}
+if (options.autoResolve) {
+  console.log('🤖 AUTO-RESOLVE MODE - Will automatically resolve simple conflicts');
+}
+if (!options.runTests) {
+  console.log('⏭️  SKIP TESTS - Tests will not run after resolution');
+}
+console.log();
+
+// Change working directory if needed
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const systemPrompt = buildSystemPrompt(options);
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  'Bash',
+  'Read',
+  'Grep',
+  'Glob',
+  'Write',
+  ...(options.autoResolve && !options.dryRun ? ['Edit'] : []),
+  'TodoWrite',
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  'append-system-prompt': systemPrompt,
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": options.autoResolve && !options.dryRun ? "acceptEdits" : "default",
+  ...(options.autoResolve && !options.dryRun ? { 'dangerously-skip-permissions': true } : {}),
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original directory
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+
+  if (exitCode === 0) {
+    console.log('\n✅ Conflict analysis complete!');
+    console.log(`\n📄 Report saved to: ${DEFAULT_REPORT_FILE}`);
+
+    if (options.dryRun) {
+      console.log('💡 Run without --dry-run to apply suggested resolutions');
+    } else if (!options.autoResolve) {
+      console.log('💡 Run with --auto-resolve to automatically fix simple conflicts');
+    }
+
+    console.log('\nNext steps:');
+    console.log('1. Review the resolution report');
+    console.log('2. Apply suggested fixes for complex conflicts');
+    if (options.runTests) {
+      console.log('3. Verify tests pass');
+    }
+    console.log(`${options.runTests ? '4' : '3'}. Complete merge with 'git commit'`);
+  }
+
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original directory on error
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
+}

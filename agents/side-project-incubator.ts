@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Side Project Incubator Agent
@@ -12,20 +12,91 @@
  * - Suggests go-to-market strategies and pricing models
  * - Identifies potential competitors and differentiation strategies
  *
- * Usage: bun run agents/side-project-incubator.ts [--niche <domain>]
+ * Usage:
+ *   bun run agents/side-project-incubator.ts [options]
+ *
+ * Examples:
+ *   # Generate ideas from current codebase
+ *   bun run agents/side-project-incubator.ts
+ *
+ *   # Focus on a specific niche
+ *   bun run agents/side-project-incubator.ts --niche "developer tools"
+ *
+ *   # Analyze a different directory
+ *   bun run agents/side-project-incubator.ts --path ../my-project
+ *
+ *   # Specify custom output file
+ *   bun run agents/side-project-incubator.ts --output my-ideas.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-async function main() {
-  const args = process.argv.slice(2);
-  const nicheIndex = args.indexOf('--niche');
-  const niche = nicheIndex !== -1 && args[nicheIndex + 1] ? args[nicheIndex + 1] : null;
+interface SideProjectOptions {
+  projectPath: string;
+  niche?: string;
+  outputFile: string;
+}
 
-  console.log('\n🚀 Side Project Incubator\n');
-  console.log('Analyzing your skills and generating personalized project ideas...\n');
+const DEFAULT_OUTPUT_FILE = "side-project-ideas.md";
 
-  const prompt = `You are a Side Project Incubator helping a developer discover and plan their next meaningful side project.
+function printHelp(): void {
+  console.log(`
+🚀 Side Project Incubator
+
+Usage:
+  bun run agents/side-project-incubator.ts [options]
+
+Options:
+  --niche <domain>        Focus on a specific market niche or domain
+  --path <directory>      Path to project/codebase to analyze (default: current directory)
+  --output <file>         Output file for ideas (default: ${DEFAULT_OUTPUT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/side-project-incubator.ts
+  bun run agents/side-project-incubator.ts --niche "developer productivity"
+  bun run agents/side-project-incubator.ts --path ../my-project --output ideas.md
+  `);
+}
+
+function parseOptions(): SideProjectOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawPath = values.path;
+  const rawNiche = values.niche;
+  const rawOutput = values.output;
+
+  const projectPath = typeof rawPath === "string" && rawPath.length > 0
+    ? resolve(rawPath)
+    : process.cwd();
+
+  const niche = typeof rawNiche === "string" && rawNiche.length > 0
+    ? rawNiche
+    : undefined;
+
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  return {
+    projectPath,
+    niche,
+    outputFile,
+  };
+}
+
+function buildPrompt(options: SideProjectOptions): string {
+  const { niche, outputFile } = options;
+
+  return `You are a Side Project Incubator helping a developer discover and plan their next meaningful side project.
 
 Your mission is to:
 
@@ -58,7 +129,7 @@ Your mission is to:
    - **Revenue Potential**: Ballpark estimate based on market research
 
 4. **Write comprehensive report**:
-   - Create a file called "side-project-ideas.md" with all findings
+   - Create a file called "${outputFile}" with all findings
    - Include market research insights
    - Add links to competitors and inspiration
    - Provide next steps for getting started
@@ -71,46 +142,85 @@ Focus on ideas that:
 - Are exciting and motivating to build
 
 Be realistic, encouraging, and specific. This should be a document they can act on immediately.`;
+}
 
-  const response = query({
-    prompt,
-    options: {
-      cwd: process.cwd(),
-      permissionMode: 'acceptEdits',
-      allowedTools: ['Bash', 'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Write'],
-      model: 'claude-sonnet-4-5-20250929',
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-        append: `You are an expert at identifying market opportunities, understanding developer skills, and creating actionable side project plans. You combine technical expertise with business acumen to help developers build meaningful products.`
-      }
-    },
-  });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["niche", "path", "output", "help", "h"] as const;
 
-  for await (const message of response) {
-    if (message.type === 'assistant') {
-      for (const block of message.message.content) {
-        if (block.type === 'text') {
-          console.log(block.text);
-        }
-      }
-    } else if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ Side project ideas generated!\n');
-        console.log(`📊 Cost: $${message.total_cost_usd.toFixed(4)}`);
-        console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-        console.log(`🎯 Turns: ${message.num_turns}\n`);
-        console.log('Check side-project-ideas.md for your personalized project ideas!\n');
-      } else {
-        console.error('\n❌ Error generating side project ideas');
-        console.error(message);
-        process.exit(1);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🚀 Side Project Incubator\n");
+console.log(`Project Path: ${options.projectPath}`);
+if (options.niche) console.log(`Niche Focus: ${options.niche}`);
+console.log(`Output File: ${options.outputFile}`);
+console.log("\nAnalyzing your skills and generating personalized project ideas...\n");
+
+// Change to the project directory if different from current
+const originalCwd = process.cwd();
+if (options.projectPath !== originalCwd) {
+  process.chdir(options.projectPath);
+}
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Glob",
+  "Grep",
+  "WebSearch",
+  "WebFetch",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const systemPromptAppend = `You are an expert at identifying market opportunities, understanding developer skills, and creating actionable side project plans. You combine technical expertise with business acumen to help developers build meaningful products.`;
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+  "append-system-prompt": systemPromptAppend,
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original directory
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+
+  if (exitCode === 0) {
+    console.log("\n✨ Side project ideas generated!\n");
+    console.log(`📄 Full report: ${options.outputFile}`);
+    console.log("\nNext steps:");
+    console.log("1. Review the generated ideas");
+    console.log("2. Pick the idea that excites you most");
+    console.log("3. Follow the 90-day roadmap");
+    console.log("4. Start building your MVP!");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original directory on error
+  if (options.projectPath !== originalCwd) {
+    process.chdir(originalCwd);
+  }
+  console.error("❌ Fatal error:", error);
   process.exit(1);
-});
+}

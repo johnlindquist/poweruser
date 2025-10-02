@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Open Source Launch Pad
@@ -14,20 +14,78 @@
  * - Creates a project roadmap and identifies "good first issues" from TODO comments
  * - Generates community health files (.github/FUNDING.yml, SECURITY.md)
  *
- * Usage: bun run agents/open-source-launch-pad.ts [path-to-project]
+ * Usage:
+ *   bun run agents/open-source-launch-pad.ts [path-to-project] [options]
+ *
+ * Examples:
+ *   # Launch pad for current directory
+ *   bun run agents/open-source-launch-pad.ts
+ *
+ *   # Launch pad for specific project
+ *   bun run agents/open-source-launch-pad.ts /path/to/project
+ *
+ *   # Skip interactive prompts and accept all defaults
+ *   bun run agents/open-source-launch-pad.ts --auto
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const projectPath = process.argv[2] || process.cwd();
+interface LaunchPadOptions {
+  projectPath: string;
+  auto: boolean;
+}
 
-console.log("🚀 Open Source Launch Pad");
-console.log("========================\n");
-console.log(`Analyzing project at: ${projectPath}\n`);
+function printHelp(): void {
+  console.log(`
+🚀 Open Source Launch Pad
 
-const prompt = `You are the Open Source Launch Pad agent. Your mission is to transform this side project into a professional, welcoming open source project.
+Usage:
+  bun run agents/open-source-launch-pad.ts [path-to-project] [options]
 
-PROJECT PATH: ${projectPath}
+Arguments:
+  path-to-project         Path to the project directory (default: current directory)
+
+Options:
+  --auto                  Skip interactive prompts and accept all defaults
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/open-source-launch-pad.ts
+  bun run agents/open-source-launch-pad.ts /path/to/my-project
+  bun run agents/open-source-launch-pad.ts --auto
+  `);
+}
+
+function parseOptions(): LaunchPadOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const rawProjectPath = positionals[0];
+  const projectPath = rawProjectPath
+    ? resolve(rawProjectPath)
+    : process.cwd();
+
+  const auto = values.auto === true;
+
+  return {
+    projectPath,
+    auto,
+  };
+}
+
+function buildPrompt(options: LaunchPadOptions): string {
+  const { projectPath, auto } = options;
+
+  return `You are the Open Source Launch Pad agent. Your mission is to transform this side project into a professional, welcoming open source project.
+
+PROJECT PATH: ${projectPath}${auto ? "\nMODE: Automatic (skip confirmations where safe)" : ""}
 
 INSTRUCTIONS:
 
@@ -123,45 +181,75 @@ IMPORTANT:
 - Be respectful of existing project conventions
 - Make the project welcoming and accessible to new contributors
 
-Start by analyzing the project structure and creating a plan. Then execute the plan to transform this project into a professional open source repository.`;
+Start by analyzing the project structure and creating a plan. Then execute the plan to transform this project into a professional open source repository.`.trim();
+}
 
-const result = query({
-  prompt,
-  options: {
-    cwd: projectPath,
-    allowedTools: [
-      "Read",
-      "Write",
-      "Glob",
-      "Grep",
-      "Bash",
-      "WebSearch"
-    ],
-    permissionMode: "acceptEdits",
-    model: "claude-sonnet-4-5-20250929"
-  }
-});
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["auto", "help", "h"] as const;
 
-for await (const message of result) {
-  if (message.type === "assistant") {
-    for (const block of message.message.content) {
-      if (block.type === "text") {
-        console.log(block.text);
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } else if (message.type === "result") {
-    console.log("\n" + "=".repeat(60));
-    if (message.subtype === "success") {
-      console.log("\n✅ Open Source Launch Pad Complete!");
-      console.log(`\n📊 Stats:`);
-      console.log(`   - Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-      console.log(`   - Turns: ${message.num_turns}`);
-      console.log(`   - Cost: $${message.total_cost_usd.toFixed(4)}`);
-      console.log(`\n📝 Check OPEN_SOURCE_SETUP_REPORT.md for next steps!`);
-    } else {
-      console.log("\n❌ Launch pad encountered an issue");
-      console.log(`   Reason: ${message.subtype}`);
-    }
-    console.log("=".repeat(60) + "\n");
   }
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🚀 Open Source Launch Pad");
+console.log("========================\n");
+console.log(`Analyzing project at: ${options.projectPath}`);
+console.log(`Mode: ${options.auto ? "Automatic" : "Interactive"}\n`);
+
+const prompt = buildPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Write",
+  "Glob",
+  "Grep",
+  "Bash",
+  "WebSearch",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "acceptEdits",
+};
+
+// Change to project directory before running claude
+const originalCwd = process.cwd();
+process.chdir(options.projectPath);
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original directory
+  process.chdir(originalCwd);
+
+  if (exitCode === 0) {
+    console.log("\n✨ Open Source Launch Pad complete!\n");
+    console.log("📝 Check OPEN_SOURCE_SETUP_REPORT.md for next steps!");
+    console.log("\nNext steps:");
+    console.log("1. Review all generated files");
+    console.log("2. Customize funding and contact information");
+    console.log("3. Update README.md with screenshots/demos");
+    console.log("4. Push changes to GitHub");
+    console.log("5. Enable GitHub Actions and issue templates");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  process.chdir(originalCwd);
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
 }

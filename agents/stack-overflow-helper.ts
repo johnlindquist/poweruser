@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Stack Overflow Helper Agent
@@ -12,76 +12,83 @@
  * - Explains why the error occurred and how the solution prevents it from happening again
  * - Creates a troubleshooting report with multiple solution approaches ranked by likely success
  * - Perfect for developers who spend hours googling errors - this does it intelligently in seconds
+ *
+ * Usage:
+ *   bun run agents/stack-overflow-helper.ts <error> [options]
+ *
+ * Examples:
+ *   # Direct error message
+ *   bun run agents/stack-overflow-helper.ts "TypeError: Cannot read property 'map' of undefined"
+ *
+ *   # From a log file
+ *   bun run agents/stack-overflow-helper.ts path/to/error.log
+ *
+ *   # Custom output file
+ *   bun run agents/stack-overflow-helper.ts "Error message" --output solution.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const ERROR_INPUT = process.argv[2];
-const PROJECT_PATH = process.cwd();
-const OUTPUT_FILE = 'ERROR_SOLUTION.md';
+const DEFAULT_OUTPUT_FILE = "ERROR_SOLUTION.md";
 
-async function main() {
-  if (!ERROR_INPUT) {
-    console.error('❌ Error: Please provide an error message or log file path');
-    console.log('\nUsage:');
-    console.log('  bun agents/stack-overflow-helper.ts "Your error message here"');
-    console.log('  bun agents/stack-overflow-helper.ts path/to/error.log');
-    console.log('\nExample:');
-    console.log('  bun agents/stack-overflow-helper.ts "TypeError: Cannot read property \'map\' of undefined"');
+interface StackOverflowHelperOptions {
+  errorInput: string;
+  outputFile: string;
+}
+
+function printHelp(): void {
+  console.log(`
+🔍 Stack Overflow Helper
+
+Usage:
+  bun run agents/stack-overflow-helper.ts <error> [options]
+
+Arguments:
+  error                   Error message or path to log file
+
+Options:
+  --output <file>         Output file (default: ${DEFAULT_OUTPUT_FILE})
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/stack-overflow-helper.ts "TypeError: Cannot read property 'map' of undefined"
+  bun run agents/stack-overflow-helper.ts path/to/error.log
+  bun run agents/stack-overflow-helper.ts "Error message" --output solution.md
+  `);
+}
+
+function parseOptions(): StackOverflowHelperOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
+  }
+
+  const errorInput = positionals[0];
+  if (!errorInput) {
+    console.error("❌ Error: Please provide an error message or log file path");
+    printHelp();
     process.exit(1);
   }
 
-  console.log('🔍 Stack Overflow Helper');
-  console.log(`📁 Project: ${PROJECT_PATH}`);
-  console.log(`🐛 Analyzing error: ${ERROR_INPUT.substring(0, 100)}${ERROR_INPUT.length > 100 ? '...' : ''}`);
-  console.log();
+  const rawOutput = values.output;
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
 
-  const systemPrompt = `You are a Stack Overflow Helper agent that intelligently debugs errors by finding and adapting solutions from Stack Overflow.
+  return {
+    errorInput,
+    outputFile,
+  };
+}
 
-Your task is to:
-1. Analyze the error message and stack trace provided:
-   - Extract the core error type and message
-   - Identify the programming language/framework from stack trace patterns
-   - Parse file paths, line numbers, and function names
-   - Understand the error context and likely causes
+function buildPrompt(options: StackOverflowHelperOptions): string {
+  const { errorInput, outputFile } = options;
 
-2. Understand the project context:
-   - Scan package.json/requirements.txt/go.mod to identify dependencies and versions
-   - Look at the relevant source files mentioned in the stack trace
-   - Identify the framework being used (React, Vue, Express, Django, etc.)
-   - Note any configuration files that might be relevant
-
-3. Search Stack Overflow for similar errors:
-   - Use WebSearch to find Stack Overflow questions with similar error messages
-   - Focus on questions with accepted answers or high vote counts
-   - Look for solutions that match the project's language/framework versions
-   - Find multiple solution approaches (not just one)
-
-4. Analyze and rank solutions:
-   - Evaluate each solution's relevance to the specific error
-   - Consider solution recency (newer solutions for newer framework versions)
-   - Check if the solution applies to the project's dependencies
-   - Rank by: relevance score > votes > recency
-
-5. Generate a comprehensive troubleshooting report with:
-   - Error analysis: What the error means and why it occurred
-   - Root cause: The likely source of the problem
-   - Multiple solution approaches ranked by likelihood of success
-   - Code examples adapted to the project's structure and patterns
-   - Step-by-step fix instructions
-   - Prevention tips to avoid this error in the future
-   - Links to relevant Stack Overflow answers for reference
-
-Use WebSearch to find Stack Overflow solutions, Read to understand the codebase context, and Write to generate the solution report.
-
-IMPORTANT:
-- Adapt generic Stack Overflow solutions to the specific project context
-- Consider framework versions and dependencies when suggesting fixes
-- Provide multiple solution approaches (sometimes the top answer isn't the right one)
-- Explain WHY the error occurred, not just HOW to fix it
-- Include prevention strategies to avoid similar errors`;
-
-  const prompt = `Debug this error and find solutions from Stack Overflow: ${ERROR_INPUT}
+  return `Debug this error and find solutions from Stack Overflow: ${errorInput}
 
 1. First, check if the input is a file path or direct error message:
    - If it's a file path, read the file to get the full error log
@@ -111,7 +118,7 @@ IMPORTANT:
    - Adapt code examples to match the project's coding style
    - Verify solutions are compatible with the dependencies
 
-6. Generate a markdown report saved as '${OUTPUT_FILE}' with:
+6. Generate a markdown report saved as '${outputFile}' with:
 
    # Error Solution Report
 
@@ -166,56 +173,109 @@ IMPORTANT:
    - [Official documentation if relevant]
 
 Start by analyzing the error, then search Stack Overflow, and generate the comprehensive solution report.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Read',
-          'Glob',
-          'Grep',
-          'WebSearch',
-          'Bash',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function buildSystemPrompt(): string {
+  return `You are a Stack Overflow Helper agent that intelligently debugs errors by finding and adapting solutions from Stack Overflow.
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ Solution found!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
+Your task is to:
+1. Analyze the error message and stack trace provided:
+   - Extract the core error type and message
+   - Identify the programming language/framework from stack trace patterns
+   - Parse file paths, line numbers, and function names
+   - Understand the error context and likely causes
 
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
+2. Understand the project context:
+   - Scan package.json/requirements.txt/go.mod to identify dependencies and versions
+   - Look at the relevant source files mentioned in the stack trace
+   - Identify the framework being used (React, Vue, Express, Django, etc.)
+   - Note any configuration files that might be relevant
 
-          console.log(`\n📄 Solution report saved to: ${OUTPUT_FILE}`);
-          console.log('💡 Review the report for multiple solution approaches ranked by likelihood of success');
-        } else {
-          console.error('\n❌ Solution search failed:', message.subtype);
-        }
-      }
+3. Search Stack Overflow for similar errors:
+   - Use WebSearch to find Stack Overflow questions with similar error messages
+   - Focus on questions with accepted answers or high vote counts
+   - Look for solutions that match the project's language/framework versions
+   - Find multiple solution approaches (not just one)
+
+4. Analyze and rank solutions:
+   - Evaluate each solution's relevance to the specific error
+   - Consider solution recency (newer solutions for newer framework versions)
+   - Check if the solution applies to the project's dependencies
+   - Rank by: relevance score > votes > recency
+
+5. Generate a comprehensive troubleshooting report with:
+   - Error analysis: What the error means and why it occurred
+   - Root cause: The likely source of the problem
+   - Multiple solution approaches ranked by likelihood of success
+   - Code examples adapted to the project's structure and patterns
+   - Step-by-step fix instructions
+   - Prevention tips to avoid this error in the future
+   - Links to relevant Stack Overflow answers for reference
+
+Use WebSearch to find Stack Overflow solutions, Read to understand the codebase context, and Write to generate the solution report.
+
+IMPORTANT:
+- Adapt generic Stack Overflow solutions to the specific project context
+- Consider framework versions and dependencies when suggesting fixes
+- Provide multiple solution approaches (sometimes the top answer isn't the right one)
+- Explain WHY the error occurred, not just HOW to fix it
+- Include prevention strategies to avoid similar errors`;
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["output", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running Stack Overflow Helper:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log("🔍 Stack Overflow Helper\n");
+console.log(`🐛 Analyzing error: ${options.errorInput.substring(0, 100)}${options.errorInput.length > 100 ? '...' : ''}`);
+console.log(`📄 Output file: ${options.outputFile}`);
+console.log("");
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt();
+const settings: Settings = {};
+
+const allowedTools = [
+  "Read",
+  "Glob",
+  "Grep",
+  "WebSearch",
+  "Bash",
+  "Write",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  "append-system-prompt": systemPrompt,
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log("\n✅ Solution found!\n");
+    console.log(`📄 Solution report saved to: ${options.outputFile}`);
+    console.log("💡 Review the report for multiple solution approaches ranked by likelihood of success");
+  }
+  process.exit(exitCode);
+} catch (error) {
+  console.error("❌ Fatal error:", error);
+  process.exit(1);
+}

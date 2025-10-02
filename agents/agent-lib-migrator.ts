@@ -18,7 +18,7 @@
  *   --help, -h         Show this help
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join, resolve } from "node:path";
 import { claude, parsedArgs } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
@@ -52,10 +52,10 @@ Options:
 
 function findAgentsMissingLibImport(rootDir: string): string[] {
   const agentsDir = resolve(rootDir, "agents");
-  let entries: string[];
+  let entries: Dirent[];
 
   try {
-    entries = readdirSync(agentsDir);
+    entries = readdirSync(agentsDir, { withFileTypes: true });
   } catch (error) {
     console.error("❌ Error reading agents directory:", error);
     process.exit(1);
@@ -64,18 +64,10 @@ function findAgentsMissingLibImport(rootDir: string): string[] {
   const targets: string[] = [];
 
   for (const entry of entries) {
-    if (!entry.endsWith(".ts")) continue;
+    if (entry.isDirectory()) continue;
+    if (!entry.name.endsWith(".ts")) continue;
 
-    const fullPath = join(agentsDir, entry);
-    try {
-      if (statSync(fullPath).isDirectory()) {
-        continue;
-      }
-    } catch (error) {
-      console.warn(`⚠️  Skipping ${fullPath}:`, error);
-      continue;
-    }
-
+    const fullPath = join(agentsDir, entry.name);
     const content = readFileSync(fullPath, "utf8");
 
     if (!content.includes("./lib")) {
@@ -83,7 +75,7 @@ function findAgentsMissingLibImport(rootDir: string): string[] {
     }
   }
 
-  return targets.sort((a, b) => a.localeCompare(b));
+  return targets;
 }
 
 function parseOptions(): MigrationOptions | null {
@@ -99,10 +91,6 @@ function parseOptions(): MigrationOptions | null {
   let targetPaths: string[] = [];
 
   if (runAll) {
-    if (positionals.length > 0) {
-      console.warn("⚠️  Ignoring positional arguments because --all was provided.");
-    }
-
     targetPaths = findAgentsMissingLibImport(process.cwd());
 
     if (targetPaths.length === 0) {

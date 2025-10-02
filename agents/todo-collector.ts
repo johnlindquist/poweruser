@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * TODO Collector Agent
@@ -11,26 +11,90 @@
  * - Identifies stale TODOs that have been in the code for months
  * - Suggests which TODOs should be converted to GitHub issues
  * - Optionally creates a TODO.md file or GitHub issues automatically
+ *
+ * Usage:
+ *   bun run agents/todo-collector.ts [project-path] [options]
+ *
+ * Examples:
+ *   # Scan current directory
+ *   bun run agents/todo-collector.ts
+ *
+ *   # Scan specific project
+ *   bun run agents/todo-collector.ts /path/to/project
+ *
+ *   # Create GitHub issues for high-priority TODOs
+ *   bun run agents/todo-collector.ts --create-issues
+ *
+ *   # Custom output file
+ *   bun run agents/todo-collector.ts --output TODO-REPORT.md
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { resolve } from "node:path";
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
 
-const PROJECT_PATH = process.argv[2] || process.cwd();
-const CREATE_ISSUES = process.argv.includes('--create-issues');
-const OUTPUT_FILE = process.argv.includes('--output')
-  ? process.argv[process.argv.indexOf('--output') + 1] || 'TODO.md'
-  : 'TODO.md';
+interface TodoCollectorOptions {
+  projectPath: string;
+  createIssues: boolean;
+  outputFile: string;
+}
 
-async function main() {
-  console.log('📝 TODO Collector');
-  console.log(`📁 Scanning project: ${PROJECT_PATH}`);
-  console.log(`📄 Output file: ${OUTPUT_FILE}`);
-  if (CREATE_ISSUES) {
-    console.log('🎫 Will create GitHub issues for TODOs');
+const DEFAULT_OUTPUT_FILE = "TODO.md";
+
+function printHelp(): void {
+  console.log(`
+📝 TODO Collector
+
+Usage:
+  bun run agents/todo-collector.ts [project-path] [options]
+
+Arguments:
+  project-path            Path to project (default: current directory)
+
+Options:
+  --output <file>         Output file (default: ${DEFAULT_OUTPUT_FILE})
+  --create-issues         Create GitHub issues for high-priority TODOs
+  --help, -h              Show this help
+
+Examples:
+  bun run agents/todo-collector.ts
+  bun run agents/todo-collector.ts /path/to/project
+  bun run agents/todo-collector.ts --create-issues
+  bun run agents/todo-collector.ts --output TODO-REPORT.md --create-issues
+  `);
+}
+
+function parseOptions(): TodoCollectorOptions | null {
+  const { values, positionals } = parsedArgs;
+  const help = values.help === true || values.h === true;
+
+  if (help) {
+    printHelp();
+    return null;
   }
-  console.log();
 
-  const systemPrompt = `You are a TODO Collector agent that helps developers track scattered TODO comments across their codebase.
+  const projectPath = positionals[0]
+    ? resolve(positionals[0])
+    : process.cwd();
+
+  const rawOutput = values.output;
+  const outputFile = typeof rawOutput === "string" && rawOutput.length > 0
+    ? rawOutput
+    : DEFAULT_OUTPUT_FILE;
+
+  const createIssues = values["create-issues"] === true || values.createIssues === true;
+
+  return {
+    projectPath,
+    createIssues,
+    outputFile,
+  };
+}
+
+function buildSystemPrompt(options: TodoCollectorOptions): string {
+  const { createIssues } = options;
+
+  return `You are a TODO Collector agent that helps developers track scattered TODO comments across their codebase.
 
 Your task is to:
 1. Scan the entire codebase for TODO-style comments:
@@ -58,7 +122,7 @@ Your task is to:
 
 4. Save the report as a markdown file with checkboxes for easy tracking
 
-${CREATE_ISSUES ? '5. Create GitHub issues for high-priority TODOs (FIXME, BUG, XXX) using gh CLI' : ''}
+${createIssues ? '5. Create GitHub issues for high-priority TODOs (FIXME, BUG, XXX) using gh CLI' : ''}
 
 Use Grep to find TODO comments efficiently, Bash (git blame) to get author/date info, and Write to generate the report.
 
@@ -68,8 +132,12 @@ IMPORTANT:
 - Calculate age in days from git blame timestamps
 - Group logically for easy action planning
 - Make the report actionable with clear priorities`;
+}
 
-  const prompt = `Scan the project at: ${PROJECT_PATH} and collect all TODO-style comments.
+function buildPrompt(options: TodoCollectorOptions): string {
+  const { projectPath, outputFile, createIssues } = options;
+
+  return `Scan the project at: ${projectPath} and collect all TODO-style comments.
 
 1. First, understand the project structure:
    - Use Glob to identify what file types are present
@@ -91,7 +159,7 @@ IMPORTANT:
    Priority 2 (Important): TODO
    Priority 3 (Info): HACK, NOTE
 
-5. Generate a markdown report saved as '${OUTPUT_FILE}' with:
+5. Generate a markdown report saved as '${outputFile}' with:
 
    # TODO Report
 
@@ -118,7 +186,7 @@ IMPORTANT:
    - Highlight stale TODOs that need attention
    - Suggest cleanup opportunities
 
-${CREATE_ISSUES ? `
+${createIssues ? `
 6. After generating the report, create GitHub issues:
    - Use 'gh issue create' for each Priority 1 TODO
    - Include file location, description, and author info
@@ -127,58 +195,76 @@ ${CREATE_ISSUES ? `
 ` : ''}
 
 Start by scanning the codebase efficiently with Grep, then enrich with git blame data.`;
+}
 
-  try {
-    const result = query({
-      prompt,
-      options: {
-        cwd: PROJECT_PATH,
-        systemPrompt,
-        allowedTools: [
-          'Glob',
-          'Grep',
-          'Read',
-          'Bash',
-          'Write'
-        ],
-        permissionMode: 'bypassPermissions',
-        model: 'sonnet',
-      }
-    });
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["output", "create-issues", "createIssues", "help", "h"] as const;
 
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        // Show assistant thinking/working
-        for (const block of message.message.content) {
-          if (block.type === 'text') {
-            console.log(block.text);
-          }
-        }
-      } else if (message.type === 'result') {
-        if (message.subtype === 'success') {
-          console.log('\n✅ TODO collection complete!');
-          console.log(`⏱️  Duration: ${(message.duration_ms / 1000).toFixed(1)}s`);
-          console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
-          console.log(`📊 Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`);
-
-          if (message.result) {
-            console.log('\n' + message.result);
-          }
-
-          console.log(`\n📄 Report saved to: ${OUTPUT_FILE}`);
-
-          if (!CREATE_ISSUES) {
-            console.log('💡 Run with --create-issues to automatically create GitHub issues for high-priority TODOs');
-          }
-        } else {
-          console.error('\n❌ TODO collection failed:', message.subtype);
-        }
-      }
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
     }
-  } catch (error) {
-    console.error('❌ Error running TODO collector:', error);
-    process.exit(1);
   }
 }
 
-main();
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+console.log('📝 TODO Collector\n');
+console.log(`📁 Scanning project: ${options.projectPath}`);
+console.log(`📄 Output file: ${options.outputFile}`);
+if (options.createIssues) {
+  console.log('🎫 Will create GitHub issues for TODOs');
+}
+console.log();
+
+// Change to project directory for scanning
+const originalCwd = process.cwd();
+process.chdir(options.projectPath);
+
+const prompt = buildPrompt(options);
+const systemPrompt = buildSystemPrompt(options);
+const settings: Settings = {};
+
+const allowedTools = [
+  'Glob',
+  'Grep',
+  'Read',
+  'Bash',
+  'Write',
+  'TodoWrite',
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: 'claude-sonnet-4-5-20250929',
+  settings: JSON.stringify(settings),
+  'append-system-prompt': systemPrompt,
+  allowedTools: allowedTools.join(' '),
+  'permission-mode': 'bypassPermissions',
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+
+  // Restore original working directory
+  process.chdir(originalCwd);
+
+  if (exitCode === 0) {
+    console.log("\n✅ TODO collection complete!\n");
+    console.log(`📄 Report saved to: ${options.outputFile}`);
+    if (!options.createIssues) {
+      console.log('💡 Run with --create-issues to automatically create GitHub issues for high-priority TODOs');
+    }
+  }
+  process.exit(exitCode);
+} catch (error) {
+  // Restore original working directory on error
+  process.chdir(originalCwd);
+  console.error('❌ Fatal error:', error);
+  process.exit(1);
+}

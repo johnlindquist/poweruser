@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun run
 
 /**
  * Changelog Automator Agent
@@ -25,54 +25,100 @@
  *   --update        Update existing CHANGELOG.md instead of creating new file
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { parseArgs } from 'util';
+import { claude, parsedArgs } from "./lib";
+import type { ClaudeFlags, Settings } from "./lib";
+
+type ChangelogFormat = 'markdown' | 'json' | 'keep-a-changelog';
 
 interface ChangelogOptions {
   from?: string;
   to: string;
-  format: 'markdown' | 'json' | 'keep-a-changelog';
+  format: ChangelogFormat;
   output: string;
   update: boolean;
 }
 
-function parseArgsFromArgv(): ChangelogOptions {
-  const { values } = parseArgs({
-    args: process.argv.slice(2),
-    options: {
-      from: { type: 'string' },
-      to: { type: 'string', default: 'HEAD' },
-      format: { type: 'string', default: 'keep-a-changelog' },
-      output: { type: 'string', default: 'CHANGELOG-new.md' },
-      update: { type: 'boolean', default: false },
-    },
-    strict: true,
-  });
+function printHelp(): void {
+  console.log(`
+📋 Changelog Automator
 
-  const options: ChangelogOptions = {
-    from: values.from as string | undefined,
-    to: values.to as string,
-    format: values.format as ChangelogOptions['format'],
-    output: values.update ? 'CHANGELOG.md' : (values.output as string),
-    update: values.update as boolean,
-  };
+Usage:
+  bun run agents/changelog-automator.ts [options]
 
-  return options;
+Options:
+  --from <tag>         Start from specific tag (default: latest tag)
+  --to <ref>           End at specific ref (default: HEAD)
+  --format <fmt>       Output format: markdown, json, keep-a-changelog (default: keep-a-changelog)
+  --output <file>      Output file (default: CHANGELOG-new.md)
+  --update             Update existing CHANGELOG.md instead of creating new file
+  --help, -h           Show this help
+
+Features:
+  - Analyzes git commits and categorizes changes
+  - Detects breaking changes from conventional commits
+  - Generates migration guides for breaking API changes
+  - Links to relevant PRs and issues
+  - Suggests semantic version bumps
+  - Filters noise (merge commits, dependency updates)
+
+Examples:
+  bun run agents/changelog-automator.ts
+  bun run agents/changelog-automator.ts --from v1.0.0 --to v2.0.0
+  bun run agents/changelog-automator.ts --update --format keep-a-changelog
+  `);
 }
 
-async function main() {
-  const options = parseArgsFromArgv();
-  const projectPath = process.cwd();
+function parseOptions(): ChangelogOptions | null {
+  const { values } = parsedArgs;
+  const help = values.help === true || values.h === true;
 
-  console.log(`\n📋 Generating changelog for: ${projectPath}\n`);
-  console.log(`Options:`);
-  console.log(`  From: ${options.from || 'latest tag'}`);
-  console.log(`  To: ${options.to}`);
-  console.log(`  Format: ${options.format}`);
-  console.log(`  Output: ${options.output}`);
-  console.log(`  Update mode: ${options.update}\n`);
+  if (help) {
+    printHelp();
+    return null;
+  }
 
-  const prompt = `Generate a professional, user-friendly changelog for this Git repository.
+  const from = typeof values.from === "string" ? values.from : undefined;
+  const to = typeof values.to === "string" ? values.to : "HEAD";
+  const format = (typeof values.format === "string" ? values.format : "keep-a-changelog") as ChangelogFormat;
+  const output = typeof values.output === "string" ? values.output : "CHANGELOG-new.md";
+  const update = values.update === true;
+
+  return {
+    from,
+    to,
+    format,
+    output: update ? "CHANGELOG.md" : output,
+    update,
+  };
+}
+
+function removeAgentFlags(): void {
+  const values = parsedArgs.values as Record<string, unknown>;
+  const agentKeys = ["from", "to", "format", "output", "update", "help", "h"] as const;
+
+  for (const key of agentKeys) {
+    if (key in values) {
+      delete values[key];
+    }
+  }
+}
+
+const options = parseOptions();
+if (!options) {
+  process.exit(0);
+}
+
+const projectPath = process.cwd();
+
+console.log(`\n📋 Generating changelog for: ${projectPath}\n`);
+console.log(`Options:`);
+console.log(`  From: ${options.from || 'latest tag'}`);
+console.log(`  To: ${options.to}`);
+console.log(`  Format: ${options.format}`);
+console.log(`  Output: ${options.output}`);
+console.log(`  Update mode: ${options.update}\n`);
+
+const prompt = `Generate a professional, user-friendly changelog for this Git repository.
 
 **Your Task:**
 
@@ -214,32 +260,33 @@ async function main() {
 
 Start by analyzing the git history and generating the changelog!`;
 
-  const response = query({
-    prompt,
-    options: {
-      cwd: projectPath,
-      permissionMode: 'bypassPermissions',
-      allowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Grep'],
-      model: 'sonnet',
-    },
-  });
+const settings: Settings = {};
 
-  for await (const message of response) {
-    if (message.type === 'result') {
-      if (message.subtype === 'success') {
-        console.log('\n✅ Changelog generation complete!\n');
-        console.log(message.result);
-        console.log('\n');
-      } else {
-        console.error('\n❌ Error during generation:');
-        console.error(message);
-        process.exit(1);
-      }
-    }
+const allowedTools = [
+  "Bash",
+  "Read",
+  "Write",
+  "Edit",
+  "Grep",
+  "TodoWrite",
+];
+
+removeAgentFlags();
+
+const defaultFlags: ClaudeFlags = {
+  model: "claude-sonnet-4-5-20250929",
+  settings: JSON.stringify(settings),
+  allowedTools: allowedTools.join(" "),
+  "permission-mode": "bypassPermissions",
+};
+
+try {
+  const exitCode = await claude(prompt, defaultFlags);
+  if (exitCode === 0) {
+    console.log('\n✅ Changelog generation complete!\n');
   }
-}
-
-main().catch((error) => {
-  console.error('Fatal error:', error);
+  process.exit(exitCode);
+} catch (error) {
+  console.error('❌ Fatal error:', error);
   process.exit(1);
-});
+}
