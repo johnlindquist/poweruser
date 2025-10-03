@@ -10,31 +10,33 @@ const { values, positionals } = parseArgs({
   options: {
     help: { type: 'boolean', short: 'h' },
     verbose: { type: 'boolean', short: 'v' },
-    interactive: { type: 'boolean', short: 'i' },
   },
   allowPositionals: true,
 });
 
 if (values.help) {
   console.log(`
-Usage: bun run headless/claude-chat.ts [options] <initial-message>
+Usage: bun run headless/claude-chat.ts [options] [initial-message]
 
 A CLI tool that spawns a Claude Code instance and sends messages using --input-format stream-json.
 
 Options:
-  -h, --help          Show this help message
-  -v, --verbose       Enable verbose output
-  -i, --interactive   Keep Claude alive for multi-turn conversation
+  -h, --help      Show this help message
+  -v, --verbose   Enable verbose output
+
+Modes:
+  - With initial message: Starts interactive mode with that message
+  - Without arguments: Reads JSON messages from stdin (non-interactive)
 
 Examples:
-  # Single message
-  bun run headless/claude-chat.ts "Explain the code in agents/test-generator.ts"
-
-  # Interactive mode - keep conversation going
-  bun run headless/claude-chat.ts -i "Hello"
+  # Interactive mode with initial message
+  bun run headless/claude-chat.ts "Hello, what files are in the headless directory?"
 
   # With verbose output
   bun run headless/claude-chat.ts -v "List all TypeScript files"
+
+  # Stdin mode (JSONL format)
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]}}' | bun run headless/claude-chat.ts
 `);
   process.exit(0);
 }
@@ -68,6 +70,28 @@ async function main() {
     '--verbose',
   ]);
 
+  // Loading indicator state
+  let loadingInterval: Timer | null = null;
+  const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let spinnerIndex = 0;
+
+  const startLoading = () => {
+    if (loadingInterval) return;
+    process.stdout.write('\r'); // Move to beginning of line
+    loadingInterval = setInterval(() => {
+      process.stdout.write(`\r${spinnerFrames[spinnerIndex]} Thinking...`);
+      spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+    }, 80);
+  };
+
+  const stopLoading = () => {
+    if (loadingInterval) {
+      clearInterval(loadingInterval);
+      loadingInterval = null;
+      process.stdout.write('\r\x1b[K'); // Clear the line
+    }
+  };
+
   // Handle stdout - stream JSON responses
   claude.stdout.on('data', (data) => {
     const lines = data.toString().split('\n').filter((line: string) => line.trim());
@@ -77,6 +101,7 @@ async function main() {
         const msg = JSON.parse(line);
 
         if (msg.type === 'assistant') {
+          stopLoading();
           // Extract text content from assistant messages
           const textContent = msg.message?.content
             ?.filter((c: any) => c.type === 'text')
@@ -87,6 +112,7 @@ async function main() {
             console.log('Assistant:', textContent);
           }
         } else if (msg.type === 'result') {
+          stopLoading();
           // Final result message with metadata
           if (values.verbose) {
             console.log('\n--- Session Complete ---');
@@ -128,6 +154,7 @@ async function main() {
       console.log('Sending:', message);
     }
     claude.stdin.write(message + '\n');
+    startLoading();
   };
 
   // Send initial message if provided as argument
@@ -135,8 +162,8 @@ async function main() {
     sendMessage(initialMessage);
   }
 
-  // If interactive mode, set up readline interface
-  if (values.interactive) {
+  // If we have an initial message, use interactive mode
+  if (initialMessage) {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -180,21 +207,14 @@ async function main() {
       claude.stdin.end();
     });
   } else {
-    // Single message mode - close stdin after a delay
-    if (initialMessage) {
-      setTimeout(() => {
-        claude.stdin.end();
-      }, 100);
-    } else {
-      // Read from stdin and forward to claude
-      process.stdin.on('data', (data) => {
-        claude.stdin.write(data);
-      });
+    // No initial message - read JSONL from stdin
+    process.stdin.on('data', (data) => {
+      claude.stdin.write(data);
+    });
 
-      process.stdin.on('end', () => {
-        claude.stdin.end();
-      });
-    }
+    process.stdin.on('end', () => {
+      claude.stdin.end();
+    });
   }
 }
 

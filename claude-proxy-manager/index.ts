@@ -5,6 +5,7 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
+import { runUserSubmitHooks } from "./utils/hook-loader";
 
 interface ProxyConfig {
   host: string;
@@ -68,17 +69,6 @@ class ClaudeProxyManager {
       console.log("✅ CA certificate generated successfully\n");
     } else {
       throw new Error("Failed to generate CA certificate");
-    }
-  }
-
-  private async checkProxyRunning(): Promise<boolean> {
-    try {
-      const response = await fetch(`http://${this.config.host}:${this.config.port}`, {
-        method: "GET",
-      });
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -165,6 +155,12 @@ class ClaudeProxyManager {
 
     // Start the proxy
     await this.startProxy();
+
+    // Demonstrate the hook system
+    const samplePrompt = "Hello, Claude!";
+    console.log(`\nRunning user submit hooks with prompt: "${samplePrompt}"`);
+    const modifiedPrompt = await runUserSubmitHooks(samplePrompt);
+    console.log(`Hooked prompt: "${modifiedPrompt}"\n`);
 
     // Generate and display environment variables
     await this.generateAndCopyEnvVars();

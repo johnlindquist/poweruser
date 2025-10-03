@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { $ } from "bun";
 import { buildClaudeFlags } from "./flags"
+import { applyConventionalHooks } from "./conventional-hooks";
 import type { ClaudeFlags } from "./claude-flags.types"
 
 /**
@@ -39,8 +40,9 @@ export async function getClaudeProjectsPath(): Promise<string> {
  * @returns Exit code from the Claude process
  */
 export async function claude(prompt: string = "", defaultFlags: ClaudeFlags = {}) {
+  const flagsWithHooks = await applyConventionalHooks(defaultFlags);
   // Build flags, merging defaults with user-provided flags
-  const flags = buildClaudeFlags(defaultFlags)
+  const flags = buildClaudeFlags(flagsWithHooks)
 
   const proc = Bun.spawn(['claude', ...flags, prompt], {
     stdio: ['inherit', 'inherit', 'inherit']

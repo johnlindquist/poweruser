@@ -13,22 +13,26 @@ This CLI tool spawns a `claude` process in headless mode and sends messages usin
 
 ## Usage
 
-### Single Message
+### Interactive Mode (Default)
 
-Pass a message as a command-line argument:
+Pass an initial message and the tool will start an interactive conversation:
 
 ```bash
-bun run headless/claude-chat.ts "Explain the code in agents/test-generator.ts"
+bun run headless/claude-chat.ts "Hello, what files are in the headless directory?"
+# After Claude responds, you'll see a "You:" prompt
+# Type your follow-up questions
+# Type 'exit' or 'quit' to end the conversation
 ```
 
-### Interactive Mode
-
-Keep the Claude instance alive for multi-turn conversations:
-
+**Example conversation:**
 ```bash
-bun run headless/claude-chat.ts -i "Hello, what files are in the headless directory?"
-# After Claude responds, you can type another message
-# Type 'exit' or 'quit' to end the conversation
+$ bun run headless/claude-chat.ts "List files in agents/"
+Assistant: The agents directory contains 100+ TypeScript files...
+
+You: Now explain what test-generator.ts does
+Assistant: The test-generator.ts agent...
+
+You: exit
 ```
 
 ### Verbose Mode

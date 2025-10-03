@@ -16,5 +16,9 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/glob": "^9.0.0",
+    "glob": "^11.0.3"
   }
 }

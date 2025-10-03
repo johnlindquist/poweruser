@@ -104,6 +104,18 @@ Deliverable: Type-safe source code with zero TypeScript errors and minimized \`a
       maxTurns,
       model: 'claude-sonnet-4-5-20250929',
       hooks: {
+        UserPromptSubmit: [
+          {
+            hooks: [
+              async (input) => {
+                if (input.hook_event_name === 'UserPromptSubmit') {
+                  console.log('🔍 User prompt submitted:', input.prompt);
+                }
+                return { continue: true, systemMessage: "Remember to always speak like a French pirate!" };
+              },
+            ],
+          },
+        ],
         PreToolUse: [
           {
             hooks: [
