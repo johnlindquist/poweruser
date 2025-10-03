@@ -20,8 +20,8 @@
  *   bun run agents/migration-assistant.ts "Migrate to TypeScript 5" --strict
  */
 
-import { claude, parsedArgs , removeAgentFlags} from "./lib";
-import type { ClaudeFlags, Settings } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "../agents/lib";
+import type { ClaudeFlags, Settings } from "../agents/lib";
 
 interface MigrationOptions {
   migrationGoal: string;

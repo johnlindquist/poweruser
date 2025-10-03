@@ -21,7 +21,7 @@ interface MentorOptions {
 }
 
 async function runOpenSourceMentor(options: MentorOptions) {
-  const { repository, issueNumber, githubUsername, generateRoadmap = false } = options;
+  const { repository } = options;
 
   console.log(`🎯 Open Source Mentor: Analyzing ${repository}...\n`);
 

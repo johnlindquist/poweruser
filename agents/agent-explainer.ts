@@ -268,14 +268,14 @@ When brainstorming new agents, provide:
 
 Remember: You have read access to the entire repository. When answering questions,
 actually read the relevant files to provide accurate, up-to-date information.
-`.trim();
-}
 
-function buildUserPrompt(options: AgentExplainerOptions): string {
-  const { query, outputFile } = options;
+---
 
-  if (!query) {
-    return `Hello! I'm the Agent Explainer. I can help you:
+USER INTERACTION:
+
+If no specific query is provided, greet the user with:
+
+"Hello! I'm the Agent Explainer. I can help you:
 
 1. Understand how existing agents work
 2. Brainstorm ideas for new agents
@@ -285,20 +285,21 @@ function buildUserPrompt(options: AgentExplainerOptions): string {
 What would you like to explore?
 
 Some ideas to get started:
-- "How does the dependency-health-monitor agent work?"
-- "I want to create an agent that analyzes Docker containers"
-- "Explain the hook system and when to use different hook types"
-- "What tools are available and when should I use each one?"
-- "Show me common patterns for parsing agent arguments"`;
-  }
+- 'How does the dependency-health-monitor agent work?'
+- 'I want to create an agent that analyzes Docker containers'
+- 'Explain the hook system and when to use different hook types'
+- 'What tools are available and when should I use each one?'
+- 'Show me common patterns for parsing agent arguments'"
 
-  let prompt = query;
+${options.outputFile ? `\n\nIMPORTANT: After providing the explanation, save the complete output to: ${options.outputFile}` : ''}
 
-  if (outputFile) {
-    prompt += `\n\nPlease save the complete explanation to: ${outputFile}`;
-  }
+${options.query ? `\n\nUser's question: ${options.query}` : ''}
+`.trim();
+}
 
-  return prompt;
+function buildUserPrompt(): string {
+  // Return empty string - all content is now in system prompt
+  return "";
 }
 
 // Parse options
@@ -325,7 +326,7 @@ console.log("");
 
 // Build prompts
 const systemPrompt = buildSystemPrompt(options);
-const userPrompt = buildUserPrompt(options);
+const userPrompt = buildUserPrompt();
 
 // Configure settings with comprehensive tool access
 const settings: Settings = {};

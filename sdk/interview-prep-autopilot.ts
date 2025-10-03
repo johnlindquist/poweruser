@@ -27,7 +27,6 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { resolve } from 'path';
 
 interface InterviewPrepOptions {
   githubUsername: string;

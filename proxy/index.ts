@@ -5,7 +5,6 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { runUserSubmitHooks } from "./utils/hook-loader";
 
 interface ProxyConfig {
   host: string;
@@ -155,12 +154,6 @@ class ClaudeProxyManager {
 
     // Start the proxy
     await this.startProxy();
-
-    // Demonstrate the hook system
-    const samplePrompt = "Hello, Claude!";
-    console.log(`\nRunning user submit hooks with prompt: "${samplePrompt}"`);
-    const modifiedPrompt = await runUserSubmitHooks(samplePrompt);
-    console.log(`Hooked prompt: "${modifiedPrompt}"\n`);
 
     // Generate and display environment variables
     await this.generateAndCopyEnvVars();
