@@ -33,14 +33,16 @@ interface AgentArchitectOptions {
 }
 
 function buildPrompt(options: AgentArchitectOptions): string {
-  const { task, specFile, outputPath, dryRun } = options;
+  const { task } = options;
+  return task;
+}
 
-  return `You are the "Agent Architect". Build a new agent according to the brief below.
+function buildSystemPrompt(options: AgentArchitectOptions): string {
+  const { outputPath, dryRun, specFile } = options;
 
-=== Agent Brief ===
-${task}
-${specFile ? '\n(Additional context provided via spec file.)' : ''}
-===================
+  return `You are the Agent Architect meta-agent. Build a new agent according to the brief provided by the user.
+
+${specFile ? 'Additional context has been provided via spec file and merged into the user prompt.' : ''}
 
 Repository conventions you must obey:
 - Follow patterns seen in existing agents within ./agents (CLI usage banner, ASCII-only comments, explicit option parsing).
@@ -63,30 +65,14 @@ Workflow expectations:
 5. Validate file formatting (TypeScript compliant) and summarize next steps for the user.
 ${dryRun ? '\nDry run active: DO NOT write files. Instead, output a detailed plan and diff preview.' : ''}
 
-Deliverable: a ready-to-run TypeScript agent file implementing the requested functionality.`;
-}
-
-function buildSystemPrompt(options: AgentArchitectOptions): string {
-  const { outputPath, dryRun } = options;
-
-  return `You are the Agent Architect meta-agent.
-
-Your role:
-- Create new Claude agents following repository conventions
-- Generate clean, type-safe TypeScript code
-- Follow patterns from existing agents in ./agents
-- Provide clear CLI interfaces with help text
-- Include proper error handling and validation
-
-File to generate: ${outputPath}
-${dryRun ? 'DRY RUN MODE: Show plans and previews only, do not write files.' : ''}
-
 Always:
 - Read existing similar agents for reference
 - Use TodoWrite to track your progress
 - Validate TypeScript syntax
 - Include usage examples in comments
-- Make the agent executable with proper shebang`;
+- Make the agent executable with proper shebang
+
+Deliverable: a ready-to-run TypeScript agent file implementing the requested functionality.`;
 }
 
 
@@ -120,7 +106,7 @@ function parseOptions(): AgentArchitectOptions | null {
   const { values, positionals } = parsedArgs;
   const help = values.help === true;
 
-  if (help || positionals.length === 0) {
+  if (help) {
     printHelp();
     return null;
   }
@@ -155,9 +141,9 @@ function parseOptions(): AgentArchitectOptions | null {
     }
   }
 
+  // Allow empty task to launch with empty prompt
   if (!task) {
-    console.error("❌ No agent brief provided. Supply a task description or use --spec-file.");
-    process.exit(1);
+    task = "";
   }
 
   // Determine output path
