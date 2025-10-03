@@ -10,9 +10,12 @@
  *   bun run agents/search-conversations.ts "search query" [options]
  *
  * Options:
- *   --max-distance <number>  Maximum cosine distance (default: 0.4)
+ *   --max-distance <number>  Maximum cosine distance (default: 0.7, 0.0=exact, 1.0=loose)
  *   --top-k <number>         Number of results to return (default: 5)
  *   --full                   Show full first message instead of summary
+ *
+ * Note: If no results are found, the script will automatically retry with a relaxed
+ * threshold (0.85) unless --max-distance was explicitly set.
  */
 
 import { parseArgs } from 'util';
@@ -21,7 +24,7 @@ import { parseArgs } from 'util';
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2),
   options: {
-    'max-distance': { type: 'string', default: '0.4' },
+    'max-distance': { type: 'string', default: '0.7' },
     'top-k': { type: 'string', default: '5' },
     'full': { type: 'boolean', default: false },
   },
@@ -35,7 +38,7 @@ const topK = values['top-k'] as string;
 const showFull = values.full as boolean;
 
 if (!query) {
-  console.error('Usage: search-conversations.ts "search query" [--max-distance 0.4] [--top-k 5] [--full]');
+  console.error('Usage: search-conversations.ts "search query" [--max-distance 0.7] [--top-k 5] [--full]');
   process.exit(1);
 }
 
@@ -53,14 +56,13 @@ console.error(`Searching ${files.length} conversation files...`);
 
 // Use search tool to find relevant conversations
 const searchArgs: string[] = [
-  'search',
   query,
   ...files,
   '--max-distance', maxDistance,
   '--top-k', topK,
 ];
 
-const searchProc = Bun.spawn(searchArgs, {
+const searchProc = Bun.spawn(['search', ...searchArgs], {
   stdout: 'pipe',
   stderr: 'pipe',
 });
@@ -72,26 +74,70 @@ if (searchErrors) {
   console.error('Search errors:', searchErrors);
 }
 
-if (!searchOutput.trim()) {
-  console.log('No matches found.');
-  process.exit(0);
-}
-
 // Parse search results and group by file with line numbers
-const lines = searchOutput.trim().split('\n');
 const fileMatches = new Map<string, number[]>();
 
-for (const line of lines) {
-  // Extract file path and line number from search output
-  const match = line.match(/^(\/[^:]+\.jsonl):(\d+):/);
-  if (match && match[1] && match[2]) {
-    const filePath = match[1];
-    const lineNumber = parseInt(match[2], 10);
+if (!searchOutput.trim()) {
+  // If user specified max-distance explicitly, don't retry
+  const userSpecifiedDistance = Bun.argv.slice(2).some(arg => arg.includes('--max-distance'));
 
-    if (!fileMatches.has(filePath)) {
-      fileMatches.set(filePath, []);
+  if (userSpecifiedDistance) {
+    console.log('No matches found.');
+    process.exit(0);
+  }
+
+  // Try with a more relaxed threshold
+  const relaxedDistance = '0.85';
+  console.error(`No matches found with distance ${maxDistance}. Retrying with --max-distance ${relaxedDistance}...`);
+  console.error(`Tip: Use --max-distance to control similarity threshold (0.0=exact, 1.0=loose)\n`);
+
+  const retryArgs: string[] = [
+    query,
+    ...files,
+    '--max-distance', relaxedDistance,
+    '--top-k', topK,
+  ];
+
+  const retryProc = Bun.spawn(['search', ...retryArgs], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const retryOutput = await new Response(retryProc.stdout).text();
+
+  if (!retryOutput.trim()) {
+    console.log('No matches found even with relaxed threshold.');
+    process.exit(0);
+  }
+
+  // Parse retry results
+  const retryLines = retryOutput.trim().split('\n');
+  for (const line of retryLines) {
+    const match = line.match(/^(\/[^:]+\.jsonl):(\d+):/);
+    if (match && match[1] && match[2]) {
+      const filePath = match[1];
+      const lineNumber = parseInt(match[2], 10);
+
+      if (!fileMatches.has(filePath)) {
+        fileMatches.set(filePath, []);
+      }
+      fileMatches.get(filePath)!.push(lineNumber);
     }
-    fileMatches.get(filePath)!.push(lineNumber);
+  }
+} else {
+  // Parse initial search results
+  const lines = searchOutput.trim().split('\n');
+  for (const line of lines) {
+    const match = line.match(/^(\/[^:]+\.jsonl):(\d+):/);
+    if (match && match[1] && match[2]) {
+      const filePath = match[1];
+      const lineNumber = parseInt(match[2], 10);
+
+      if (!fileMatches.has(filePath)) {
+        fileMatches.set(filePath, []);
+      }
+      fileMatches.get(filePath)!.push(lineNumber);
+    }
   }
 }
 
