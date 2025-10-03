@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "claude.md": "claude \"/init\" --print --permission-mode acceptEdits"
   },
   "devDependencies": {
     "@types/bun": "latest",
