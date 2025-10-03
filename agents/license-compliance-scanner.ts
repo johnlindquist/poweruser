@@ -28,7 +28,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface LicenseScanOptions {
@@ -251,16 +251,7 @@ IMPORTANT:
 - Provide actionable alternatives for problematic dependencies
 - Make the report useful for both technical and legal reviewers`;
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["proprietary", "output", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 // Change working directory if needed
 if (options.projectPath !== process.cwd()) {
@@ -277,7 +268,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "proprietary", "output", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -18,7 +18,7 @@
  *   bun run agents/pr-review-checklist-generator.ts --output PR_DESCRIPTION.md
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface PRChecklistOptions {
@@ -280,16 +280,7 @@ Use the Write tool to save the PR description to: ${outputPath}
 Start by analyzing the changed files.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["branch", "base", "output", "skip-tests", "skip-linting", "skip-formatting", "strict", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -308,7 +299,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "branch", "base", "output", "skip-tests", "skip-linting", "skip-formatting", "strict", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

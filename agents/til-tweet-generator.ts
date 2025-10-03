@@ -37,7 +37,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface TilTweetOptions {
@@ -322,16 +322,7 @@ Write each daily file to ${outputDir}/YYYY-MM-DD.md${prefixInstruction}
 Start by discovering the conversation files and organizing them by date!`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["days", "per-day", "prefix", "single-file", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -360,7 +351,9 @@ const prompt = buildPrompt(options);
 const systemPrompt = buildSystemPrompt(options);
 const settings: Settings = {};
 
-removeAgentFlags();
+removeAgentFlags([
+    "days", "per-day", "prefix", "single-file", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

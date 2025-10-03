@@ -20,7 +20,7 @@
  *   --help, -h              Show help message
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 const SYSTEM_PROMPT = `You are a git commit message expert. Your job is to analyze staged changes and generate meaningful, conventional commit messages.
@@ -124,16 +124,7 @@ function parseOptions(): boolean {
   return true;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const shouldRun = parseOptions();
 if (!shouldRun) {
@@ -158,7 +149,9 @@ Explain your reasoning briefly, and present the final commit message in a markdo
 
 const settings: Settings = {};
 
-removeAgentFlags();
+removeAgentFlags([
+    "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -27,7 +27,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface InterviewPrepOptions {
@@ -386,16 +386,7 @@ IMPORTANT:
 `;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["github", "job-url", "role", "repo", "output", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 // Main execution
 const options = parseOptions();
@@ -425,7 +416,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "github", "job-url", "role", "repo", "output", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

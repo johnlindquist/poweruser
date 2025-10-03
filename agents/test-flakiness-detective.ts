@@ -14,7 +14,7 @@
 //   bun run agents/test-flakiness-detective.ts src/components/Button.test.tsx --fix
 //   bun run agents/test-flakiness-detective.ts --report flakiness.md
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface TestFlakinessOptions {
@@ -162,16 +162,7 @@ ${runTests ? "6" : "4"}. **Generate report**: Save a comprehensive flakiness rep
 Focus on actionable insights and practical fixes. Prioritize high-severity issues.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["fix", "report", "run-tests", "runTests", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -198,7 +189,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "fix", "report", "run-tests", "runTests", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

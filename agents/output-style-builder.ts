@@ -25,7 +25,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface OutputStyleBuilderOptions {
@@ -241,16 +241,7 @@ function parseOptions(): OutputStyleBuilderOptions | null {
   };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["spec-file", "specFile", "slug", "dry-run", "dryRun", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -296,7 +287,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "spec-file", "specFile", "slug", "dry-run", "dryRun", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

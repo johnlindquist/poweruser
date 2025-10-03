@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface BundleAnalyzerOptions {
@@ -53,16 +53,7 @@ function parseOptions(): BundleAnalyzerOptions | null {
   return { url, reportFile };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["report", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -96,7 +87,9 @@ const mcpConfig = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags([
+    "report", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

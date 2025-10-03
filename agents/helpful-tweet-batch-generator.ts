@@ -28,7 +28,7 @@
  */
 
 import { resolve, dirname } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface TweetGeneratorOptions {
@@ -216,16 +216,7 @@ ${STYLE_SAMPLES}
 Focus on quality: every tweet should feel like a mini lesson or provocation John would share today.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["count", "idea", "draft", "tweet-idea", "output", "include-replies", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -264,7 +255,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "count", "idea", "draft", "tweet-idea", "output", "include-replies", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

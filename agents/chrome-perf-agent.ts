@@ -4,7 +4,7 @@
  * Chrome Performance Analysis Agent
  */
 
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readBooleanFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 type NetworkThrottle = 'slow3g' | 'fast3g' | 'slow4g' | 'fast4g' | 'none';
@@ -38,7 +38,6 @@ Options:
 `);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -62,49 +61,6 @@ try {
   process.exit(1);
 }
 
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function readBooleanFlag(name: string): boolean {
-  if (values[name] === true) return true;
-  if (values[name] === false) return false;
-  return argv.includes(`--${name}`);
-}
-
-function readNumberFlag(name: string): number | undefined {
-  const raw = readStringFlag(name);
-  if (!raw) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    console.error(`❌ Error: --${name} must be a number`);
-    process.exit(1);
-  }
-  return parsed;
-}
-
 function parseOptions(): ChromePerfOptions {
   const throttleRaw = readStringFlag('throttle');
   const throttle = (throttleRaw ?? 'none') as NetworkThrottle;
@@ -114,20 +70,21 @@ function parseOptions(): ChromePerfOptions {
     process.exit(1);
   }
 
-  const cpuThrottle = readNumberFlag('cpu');
-  if (cpuThrottle !== undefined && (cpuThrottle < 1 || cpuThrottle > 20)) {
+  const cpuThrottleRaw = readStringFlag('cpu');
+  const cpuThrottle = cpuThrottleRaw ? Number(cpuThrottleRaw) : undefined;
+  if (cpuThrottle !== undefined && (!Number.isFinite(cpuThrottle) || cpuThrottle < 1 || cpuThrottle > 20)) {
     console.error('❌ Error: --cpu must be between 1 and 20');
     process.exit(1);
   }
 
-  const generatePlan = readBooleanFlag('generate-plan');
+  const generatePlan = readBooleanFlag('generate-plan', false);
   const outputFile = readStringFlag('output');
 
   return {
     url: urlCandidate,
     throttle,
     cpuThrottle,
-    mobile: readBooleanFlag('mobile'),
+    mobile: readBooleanFlag('mobile', false),
     generatePlan,
     outputFile,
   };

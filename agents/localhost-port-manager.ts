@@ -23,7 +23,7 @@
  *   bun run agents/localhost-port-manager.ts --port=3000 --dry-run
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface PortManagerOptions {
@@ -159,16 +159,7 @@ Optionally create/update a .port-registry.json file in the project root to track
 Start by scanning for port usage and generating the port management report.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["port", "scan-all", "scanAll", "dry-run", "dryRun", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -197,7 +188,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "port", "scan-all", "scanAll", "dry-run", "dryRun", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

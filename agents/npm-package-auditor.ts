@@ -23,7 +23,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 const SEVERITY_LEVELS = ['low', 'moderate', 'high', 'critical'] as const;
@@ -149,16 +149,7 @@ ${generateSbom ? '\nSBOM requirement: export npm tree to JSON and include digest
 
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["project", "include-dev", "includeDev", "severity", "plan-fixes", "planFixes", "sbom", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -197,7 +188,9 @@ const allowedTools = [
 // Note: Agent definitions would typically be passed via MCP config or other mechanism
 // For now, we'll rely on the Task tool for sub-agent delegation
 
-removeAgentFlags();
+removeAgentFlags([
+    "project", "include-dev", "includeDev", "severity", "plan-fixes", "planFixes", "sbom", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

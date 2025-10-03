@@ -27,7 +27,7 @@
  *   bun run agents/form-flow-optimizer.ts https://example.com/form --report form-analysis.md
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface FormFlowOptions {
@@ -279,16 +279,7 @@ ${mobile ? '- [List of mobile-specific issues]' : 'N/A - Desktop only analysis'}
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["steps", "report", "mobile", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -330,7 +321,9 @@ const mcpConfig = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags([
+    "steps", "report", "mobile", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

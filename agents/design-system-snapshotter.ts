@@ -19,7 +19,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface DesignSnapshotOptions {
@@ -130,25 +130,7 @@ Objectives:
 Deliverable: a comprehensive design-system reconstruction blueprint enabling engineers to reproduce the library from the audited assets.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "assets",
-    "output",
-    "limit-components",
-    "limitComponents",
-    "token-files",
-    "tokenFiles",
-    "help",
-    "h",
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -176,7 +158,16 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "assets",
+    "output",
+    "limit-components",
+    "limitComponents",
+    "token-files",
+    "tokenFiles",
+    "help",
+    "h",
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

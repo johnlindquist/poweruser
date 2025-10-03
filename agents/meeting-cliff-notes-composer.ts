@@ -46,7 +46,7 @@
 
 import { promises as fs } from "node:fs";
 import { resolve, basename } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type OutputFormat = "slack" | "markdown" | "notion" | "email";
@@ -401,37 +401,7 @@ ${resourcesSection}
 Deliver the final briefing only, without preamble or tool logs.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "title",
-    "date",
-    "timezone",
-    "team",
-    "project",
-    "attendee",
-    "attendees",
-    "focus",
-    "transcript",
-    "doc",
-    "note",
-    "extra",
-    "summary-length",
-    "format",
-    "followup-days",
-    "highlight-risks",
-    "no-highlight-risks",
-    "include-quotes",
-    "help",
-    "h",
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -475,7 +445,28 @@ const allowedTools = [
   "WebFetch",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "title",
+    "date",
+    "timezone",
+    "team",
+    "project",
+    "attendee",
+    "attendees",
+    "focus",
+    "transcript",
+    "doc",
+    "note",
+    "extra",
+    "summary-length",
+    "format",
+    "followup-days",
+    "highlight-risks",
+    "no-highlight-risks",
+    "include-quotes",
+    "help",
+    "h",
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

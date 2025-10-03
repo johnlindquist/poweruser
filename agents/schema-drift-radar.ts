@@ -28,7 +28,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type SeverityLevel = 'low' | 'medium' | 'high';
@@ -249,27 +249,7 @@ TOOLS & EXECUTION GUIDANCE
 Please begin the drift reconnaissance now and keep output concise but actionable.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "project",
-    "schema-dump",
-    "orm",
-    "output",
-    "generate-migrations",
-    "no-dry-run",
-    "severity",
-    "ticket",
-    "help",
-    "h",
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -324,7 +304,18 @@ if (options.projectPath !== originalCwd) {
   process.chdir(options.projectPath);
 }
 
-removeAgentFlags();
+removeAgentFlags([
+    "project",
+    "schema-dump",
+    "orm",
+    "output",
+    "generate-migrations",
+    "no-dry-run",
+    "severity",
+    "ticket",
+    "help",
+    "h",
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

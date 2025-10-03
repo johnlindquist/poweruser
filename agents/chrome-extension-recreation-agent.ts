@@ -20,7 +20,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ChromeExtensionRecreationOptions {
@@ -76,13 +76,7 @@ function parseOptions(): ChromeExtensionRecreationOptions | null {
   return { workspacePath, extensionId, crxPath, outputFile, includeAssets };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["workspace", "extension", "crx", "output", "include-assets", "includeAssets", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) {
@@ -151,7 +145,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "workspace", "extension", "crx", "output", "include-assets", "includeAssets", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

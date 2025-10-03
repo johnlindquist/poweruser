@@ -20,7 +20,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ExtensionRecreationOptions {
@@ -142,16 +142,7 @@ Required workflow:
 Deliverable: A concise but comprehensive reverse-engineering plan enabling a developer to recreate the extension without copying code verbatim.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["workspace", "extension", "vsix", "output", "include-browser", "includeBrowser", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -185,7 +176,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "workspace", "extension", "vsix", "output", "include-browser", "includeBrowser", "help", "h"
+  ]);
 
 // Change to workspace directory before running Claude
 const originalCwd = process.cwd();

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 function printHelp(): void {
@@ -37,13 +37,7 @@ function parseOptions(): UpdaterOptions | null {
   return { dryRun, days };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["dry-run", "days", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -57,7 +51,9 @@ const allowedTools = options.dryRun
   ? ["Bash", "Glob", "Grep", "Read", "TodoWrite"]
   : ["Bash", "Glob", "Grep", "Read", "Edit", "Write", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags([
+    "dry-run", "days", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, getPositionals, parsedArgs } from "./lib";
+import { claude, getPositionals, parsedArgs, readStringFlag } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type TaskKind = 'screenshot' | 'scrape' | 'test';
@@ -16,7 +16,6 @@ function printHelp(): void {
   console.log(`\n⚡ Chrome Batch URL Processor\n\nUsage:\n  bun run agents/chrome-batch-url-processor.ts <url-file> <task> [--output <dir>] [--selector <css>]\n\nTasks:\n  screenshot    Take screenshots of all URLs\n  scrape        Scrape data from all URLs\n  test          Test all URLs for errors and performance\n\nOptions:\n  --output <dir>       Output directory (default: ./batch-output)\n  --selector <css>     CSS selector for scraping (default: body)\n  --help, -h           Show this help message\n`);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -38,28 +37,6 @@ const validTasks: TaskKind[] = ['screenshot', 'scrape', 'test'];
 if (!validTasks.includes(taskValue)) {
   console.error(`❌ Error: task must be one of ${validTasks.join(', ')}`);
   process.exit(1);
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  const index = argv.indexOf(`--${name}`);
-  if (index !== -1 && argv[index + 1] && !argv[index + 1]!.startsWith('--')) {
-    return argv[index + 1]!;
-  }
-
-  const equalsForm = argv.find((arg) => arg.startsWith(`--${name}=`));
-  if (equalsForm) {
-    const [, value] = equalsForm.split('=', 2);
-    if (value && value.length > 0) {
-      return value;
-    }
-  }
-
-  return undefined;
 }
 
 const batchOptions: BatchProcessorOptions = {

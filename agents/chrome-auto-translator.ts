@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, getPositionals, parsedArgs } from "./lib";
+import { claude, getPositionals, parsedArgs, readStringFlag, readBooleanFlag } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface TranslatorOptions {
@@ -14,7 +14,6 @@ function printHelp(): void {
   console.log(`\n🌐 Chrome Auto Translator\n\nUsage:\n  bun run agents/chrome-auto-translator.ts <url> <target-lang> [--output <file>] [--compare-layouts]\n\nOptions:\n  --output <file>        Output report file (default: translation-report.md)\n  --compare-layouts      Compare original and translated layouts\n  --help, -h             Show this help message\n\nExamples:\n  bun run agents/chrome-auto-translator.ts https://example.com es\n  bun run agents/chrome-auto-translator.ts https://example.com fr --compare-layouts\n`);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -32,30 +31,8 @@ if (positionals.length < 2) {
   process.exit(1);
 }
 
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === "string" && raw.length > 0) {
-    return raw;
-  }
-
-  const index = argv.indexOf(`--${name}`);
-  if (index !== -1 && argv[index + 1] && !argv[index + 1]!.startsWith("--")) {
-    return argv[index + 1]!;
-  }
-
-  const equalsForm = argv.find((arg) => arg.startsWith(`--${name}=`));
-  if (equalsForm) {
-    const [, value] = equalsForm.split("=", 2);
-    if (value && value.length > 0) {
-      return value;
-    }
-  }
-
-  return undefined;
-}
-
 const outputFile = readStringFlag("output") ?? "translation-report.md";
-const compareLayouts = values["compare-layouts"] === true || argv.includes("--compare-layouts");
+const compareLayouts = readBooleanFlag("compare-layouts", false);
 
 const translatorOptions: TranslatorOptions = {
   url: positionals[0]!,

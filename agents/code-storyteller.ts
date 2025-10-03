@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface StorytellerOptions {
@@ -42,13 +42,7 @@ function parseOptions(): StorytellerOptions | null {
   return { target, outputFile, style };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["output", "style", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -62,7 +56,9 @@ const prompt = `You are a code storyteller. Analyze ${options.target} and create
 const settings: Settings = {};
 const allowedTools = ["Bash", "Glob", "Grep", "Read", "Write", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags([
+    "output", "style", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

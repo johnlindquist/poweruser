@@ -5,7 +5,7 @@
  */
 
 import { resolve } from 'node:path';
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readBooleanFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 type AuditorOptions = {
@@ -43,7 +43,6 @@ Options:
 `);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -51,38 +50,6 @@ const help = values.help === true || values.h === true;
 if (help) {
   printHelp();
   process.exit(0);
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function hasFlag(name: string): boolean {
-  if (values[name] === true) return true;
-  if (values[name] === false) return false;
-  return argv.includes(`--${name}`);
 }
 
 function parseOptions(): AuditorOptions {
@@ -94,11 +61,11 @@ function parseOptions(): AuditorOptions {
     projectPath: projectRaw,
     envPath,
     examplePath,
-    checkGitHistory: !hasFlag('no-git-history'),
-    checkDangerousDefaults: !hasFlag('no-dangerous-defaults'),
-    generateMigrationGuide: hasFlag('generate-migration'),
-    generateSecureTemplate: hasFlag('generate-template'),
-    productionMode: hasFlag('production'),
+    checkGitHistory: !readBooleanFlag('no-git-history', false),
+    checkDangerousDefaults: !readBooleanFlag('no-dangerous-defaults', false),
+    generateMigrationGuide: readBooleanFlag('generate-migration', false),
+    generateSecureTemplate: readBooleanFlag('generate-template', false),
+    productionMode: readBooleanFlag('production', false),
   };
 }
 

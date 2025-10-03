@@ -25,7 +25,7 @@
  */
 
 import { readFileSync } from 'fs';
-import { claude, parsedArgs } from './lib';
+import { claude, parsedArgs, removeAgentFlags } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 interface QuickTypeOptions {
@@ -135,16 +135,7 @@ Generate:
 Make it production-ready and include helpful comments. Infer sensible type names from the data structure.${typeNameHint}`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ['type-name', 'typeName', 'help', 'h'] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -208,7 +199,9 @@ Provide three code blocks:
 Make the code production-ready - properly formatted, well-commented, and ready to paste into a project.
 Work fast - aim to complete in under 3 seconds!`;
 
-removeAgentFlags();
+removeAgentFlags([
+    
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: 'claude-sonnet-4-5-20250929',

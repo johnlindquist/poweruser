@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 interface OptimizerOptions {
@@ -23,7 +23,6 @@ Options:
 `);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -45,32 +44,6 @@ try {
 } catch {
   console.error('❌ Error: Invalid URL format');
   process.exit(1);
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
 }
 
 const options: OptimizerOptions = {

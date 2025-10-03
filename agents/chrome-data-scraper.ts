@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readNumberFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 type OutputFormat = 'json' | 'csv' | 'markdown';
@@ -20,7 +20,6 @@ function printHelp(): void {
   console.log(`\n🕷️  Chrome Data Scraper\n\nUsage:\n  bun run agents/chrome-data-scraper.ts <url> "<data description>" [--output <file>] [--format json|csv|markdown] [--max-items <number>]\n\nExamples:\n  bun run agents/chrome-data-scraper.ts https://example.com "extract all product names and prices"\n  bun run agents/chrome-data-scraper.ts https://news.example.com "get headlines and publication dates" --format csv\n  bun run agents/chrome-data-scraper.ts https://shop.example.com "scrape product information with prices and ratings" --output products.json --max-items 50\n  bun run agents/chrome-data-scraper.ts https://blog.example.com "extract article titles and author names" --format markdown\n`);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -28,45 +27,6 @@ const help = values.help === true || values.h === true;
 if (help) {
   printHelp();
   process.exit(0);
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function readNumberFlag(name: string): number | undefined {
-  const raw = readStringFlag(name);
-  if (!raw) {
-    return undefined;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.error(`❌ Error: --${name} must be a positive number`);
-    process.exit(1);
-  }
-  return parsed;
 }
 
 function parseOptions(): ScraperOptions {
@@ -84,7 +44,7 @@ function parseOptions(): ScraperOptions {
     ? (formatRaw as OutputFormat)
     : DEFAULT_FORMAT;
 
-  const maxItems = readNumberFlag('max-items') ?? DEFAULT_MAX_ITEMS;
+  const maxItems = readNumberFlag('max-items', DEFAULT_MAX_ITEMS);
 
   const resolvedOutput = outputFile ?? `scraped-data.${format}`;
 

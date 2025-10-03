@@ -25,7 +25,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface CareerBuilderOptions {
@@ -278,16 +278,7 @@ Save all analysis and recommendations in the "${outputDir}/" directory:
 Use TodoWrite to track your progress through each phase. Be encouraging, specific, and actionable. Focus on building momentum with achievable goals.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["job-url", "github", "role", "resume", "output", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -381,7 +372,9 @@ Generate comprehensive markdown files in the output directory:
 Remember: Your goal is to transform "I don't know if I can do this" into "I have a clear path forward and I'm making progress every day."
 `.trim();
 
-removeAgentFlags();
+removeAgentFlags([
+    "job-url", "github", "role", "resume", "output", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -20,7 +20,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type FocusType = 'all' | 'performance' | 'architecture' | 'bugfix' | 'feature';
@@ -272,16 +272,7 @@ Generate 3 tweet-sized hooks (280 chars) that could promote this post:
 Start by analyzing the git history to find the best story to tell.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["since", "focus", "file", "output", "tone", "no-code", "noCode", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -307,7 +298,9 @@ const allowedTools = [
   'TodoWrite',
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "since", "focus", "file", "output", "tone", "no-code", "noCode", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: 'claude-sonnet-4-5-20250929',

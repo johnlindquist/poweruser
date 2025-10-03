@@ -34,7 +34,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface StorybookCoverageOptions {
@@ -195,25 +195,6 @@ Deliverables:
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "stories-dir",
-    "component-globs",
-    "report",
-    "component",
-    "auto-stub",
-    "no-mdx",
-    "help",
-    "h",
-  ] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -246,7 +227,16 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+  "stories-dir",
+  "component-globs",
+  "report",
+  "component",
+  "auto-stub",
+  "no-mdx",
+  "help",
+  "h",
+]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

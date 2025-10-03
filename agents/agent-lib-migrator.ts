@@ -20,7 +20,7 @@
 
 import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join, resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type MigrationOptions = {
@@ -175,16 +175,7 @@ When finished, summarize the changes and include any follow-up steps.
 `;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["apply", "model", "help", "h", "all"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -219,7 +210,9 @@ const allowedTools = [
   "Glob",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "apply", "model", "help", "h", "all"
+  ]);
 
 let completed = 0;
 

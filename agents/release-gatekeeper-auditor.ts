@@ -28,7 +28,7 @@
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { claude, parsedArgs } from './lib';
+import { claude, parsedArgs, removeAgentFlags } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 interface CliOptions {
@@ -99,28 +99,7 @@ function validateHint(pathValue: string | undefined, description: string): strin
   return `${description}: ${fullPath}${exists ? '' : ' (warning: missing)'}`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    'release',
-    'prev',
-    'report',
-    'notes',
-    'changelog',
-    'flags',
-    'manifest',
-    'incident',
-    'lookback',
-    'dry-run',
-    'help',
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = getCliOptions();
 if (!options) {
@@ -264,7 +243,9 @@ End the session by outputting a concise (<=4 sentences) readiness verdict recap 
 
 const settings: Settings = {};
 
-removeAgentFlags();
+removeAgentFlags([
+    
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: 'claude-sonnet-4-5-20250929',

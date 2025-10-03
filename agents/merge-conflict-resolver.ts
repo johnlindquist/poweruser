@@ -33,7 +33,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface MergeConflictOptions {
@@ -255,16 +255,7 @@ ${dryRun ? '\n**DRY RUN MODE** - No files were modified. Review the report and r
 Start by checking git status to detect conflicts.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["dry-run", "dryRun", "auto-resolve", "autoResolve", "skip-tests", "skipTests", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -304,7 +295,9 @@ const allowedTools = [
   'TodoWrite',
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "dry-run", "dryRun", "auto-resolve", "autoResolve", "skip-tests", "skipTests", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

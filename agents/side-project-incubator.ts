@@ -30,7 +30,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface SideProjectOptions {
@@ -144,16 +144,7 @@ Focus on ideas that:
 Be realistic, encouraging, and specific. This should be a document they can act on immediately.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["niche", "path", "output", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -186,7 +177,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "niche", "path", "output", "help", "h"
+  ]);
 
 const systemPromptAppend = `You are an expert at identifying market opportunities, understanding developer skills, and creating actionable side project plans. You combine technical expertise with business acumen to help developers build meaningful products.`;
 

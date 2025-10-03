@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ResponsiveOptions {
@@ -60,13 +60,7 @@ function parseOptions(): ResponsiveOptions | null {
   return { url, breakpoints, reportFile, testDevices };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["breakpoints", "devices", "report", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -90,7 +84,9 @@ const settings: Settings = {};
 const allowedTools = ["mcp__chrome-devtools__navigate_page", "mcp__chrome-devtools__new_page", "mcp__chrome-devtools__take_screenshot", "mcp__chrome-devtools__take_snapshot", "mcp__chrome-devtools__resize_page", "mcp__chrome-devtools__evaluate_script", "mcp__chrome-devtools__wait_for", "Write", "TodoWrite"];
 const mcpConfig = { mcpServers: { "chrome-devtools": { command: "npx", args: ["chrome-devtools-mcp@latest", "--isolated"] }}};
 
-removeAgentFlags();
+removeAgentFlags([
+    "breakpoints", "devices", "report", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -29,7 +29,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 const DEFAULT_APP_PATH = "/Applications";
@@ -147,16 +147,7 @@ ${includeAssets ? "   - Review static assets (html/css/images) to understand UI 
 Tools allowed: Bash, BashOutput, Read, Write, Edit, Glob, Grep, WebFetch, TodoWrite.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["app-path", "app-name", "asar", "output", "include-assets", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -187,7 +178,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "app-path", "app-name", "asar", "output", "include-assets", "help", "h"
+  ]);
 
 const systemPrompt = `You have access to three specialized agents:
 - app-scout (haiku): Finds Electron app bundles and associated asar archives. Locate candidate Electron apps, apply name filters, and surface metadata for the best target.

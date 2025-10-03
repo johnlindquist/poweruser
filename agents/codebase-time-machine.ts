@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface TimeMachineOptions {
@@ -48,13 +48,7 @@ function parseOptions(): TimeMachineOptions | null {
   return { file, outputFile, depth };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["output", "depth", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -68,7 +62,9 @@ const prompt = `Travel through time analyzing ${options.file}. Use git log to ge
 const settings: Settings = {};
 const allowedTools = ["Bash", "Read", "Write", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags([
+    "output", "depth", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

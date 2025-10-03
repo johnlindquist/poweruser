@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readNumberFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 interface MonitorOptions {
@@ -28,7 +28,6 @@ Options:
 `);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -51,47 +50,6 @@ try {
 } catch {
   console.error('❌ Error: Invalid URL');
   process.exit(1);
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function readNumberFlag(name: string, defaultValue: number): number {
-  const raw = readStringFlag(name);
-  if (!raw) {
-    return defaultValue;
-  }
-
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.error(`❌ Error: --${name} must be a positive number`);
-    process.exit(1);
-  }
-
-  return parsed;
 }
 
 const options: MonitorOptions = {

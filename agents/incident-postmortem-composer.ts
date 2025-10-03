@@ -25,7 +25,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface IncidentPostmortemOptions {
@@ -173,16 +173,7 @@ Deliverables:
 Use Write to persist the final report to ${options.outputPath}. Include callouts for missing data or recommended next data pulls.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["incident-id", "output", "channels", "timezone", "no-customer-comms", "no-metrics", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -212,7 +203,9 @@ const allowedTools = [
   "Bash",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "incident-id", "output", "channels", "timezone", "no-customer-comms", "no-metrics", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

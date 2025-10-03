@@ -19,7 +19,7 @@
  *   bun run agents/flaky-test-fixer.ts "npm test" --runs 5 --auto-fix
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface FlakyTestOptions {
@@ -145,16 +145,7 @@ ${autoFix ? `
 Generate a comprehensive report and suggest fixes.${autoFix ? " Apply automated fixes where safe." : ""}`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["runs", "auto-fix", "autoFix", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -180,7 +171,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "runs", "auto-fix", "autoFix", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

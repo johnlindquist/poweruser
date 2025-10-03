@@ -26,7 +26,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type Audience = "engineering" | "pm" | "exec" | "mixed";
@@ -200,27 +200,6 @@ Guardrails:
 - Keep timelines chronological and note date boundaries clearly`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "since",
-    "until",
-    "output",
-    "audience",
-    "format",
-    "no-shoutouts",
-    "no-metrics",
-    "no-retro",
-    "help",
-    "h"
-  ] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -258,7 +237,18 @@ const allowedTools = [
   "Edit",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+  "since",
+  "until",
+  "output",
+  "audience",
+  "format",
+  "no-shoutouts",
+  "no-metrics",
+  "no-retro",
+  "help",
+  "h",
+]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

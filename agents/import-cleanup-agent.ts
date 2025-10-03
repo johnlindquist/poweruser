@@ -31,7 +31,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ImportCleanupOptions {
@@ -330,16 +330,6 @@ IMPORTANT:
 - Preserve comments on the same line as imports when possible`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["dry-run", "dryRun", "report", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 console.log("🧹 Import Cleanup Agent\n");
 console.log(`📁 Project: ${options.projectPath}`);
@@ -365,7 +355,7 @@ const allowedTools = [
   ...(options.dryRun ? [] : ["Edit", "MultiEdit"]),
 ];
 
-removeAgentFlags();
+removeAgentFlags(["dry-run", "dryRun", "report", "help", "h"]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

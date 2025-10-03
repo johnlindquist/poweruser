@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface CliReconstructorOptions {
@@ -46,13 +46,7 @@ function parseOptions(): CliReconstructorOptions | null {
   return { binPath, focusPatterns, maxCommands, outputFile, dryRun };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["bin-path", "focus", "max-commands", "output", "dry-run", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -69,7 +63,9 @@ const allowedTools = options.dryRun
   ? ["Bash", "Read", "TodoWrite"]
   : ["Bash", "Read", "Write", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags([
+    "bin-path", "focus", "max-commands", "output", "dry-run", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

@@ -17,7 +17,7 @@
  *   bun run agents/zai-example.ts "Explain quantum computing" --system "You are a physics professor"
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ZaiExampleOptions {
@@ -74,16 +74,7 @@ function parseOptions(): ZaiExampleOptions | null {
   };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["system", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -99,7 +90,9 @@ const settings: Settings = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags([
+    "system", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

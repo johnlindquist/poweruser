@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bun run
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface CodeReviewOptions {
@@ -55,13 +55,7 @@ function parseOptions(): CodeReviewOptions | null {
   return { target, targetType };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["branch", "help", "h"] as const;
-  for (const key of agentKeys) {
-    if (key in values) delete values[key];
-  }
-}
+
 
 const options = parseOptions();
 if (!options) process.exit(0);
@@ -81,7 +75,9 @@ const prompt = `You are an automated code reviewer. Review ${targetDescription}.
 const settings: Settings = {};
 const allowedTools = ["Bash", "Glob", "Grep", "Read", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags([
+    "branch", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

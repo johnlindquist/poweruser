@@ -27,7 +27,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type WcagLevel = "A" | "AA" | "AAA";
@@ -205,16 +205,7 @@ ${autoFix ? "## Auto-Fix Results\\n- Files Modified: [count]\\n- Issues Fixed: [
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["src", "report", "wcag", "auto-fix", "autoFix", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -255,7 +246,9 @@ const mcpConfig = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags([
+    "src", "report", "wcag", "auto-fix", "autoFix", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

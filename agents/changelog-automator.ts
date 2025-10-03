@@ -25,7 +25,7 @@
  *   --update        Update existing CHANGELOG.md instead of creating new file
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type ChangelogFormat = 'markdown' | 'json' | 'keep-a-changelog';
@@ -92,16 +92,7 @@ function parseOptions(): ChangelogOptions | null {
   };
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["from", "to", "format", "output", "update", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -271,7 +262,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "from", "to", "format", "output", "update", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

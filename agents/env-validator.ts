@@ -16,7 +16,7 @@
  *   bun run agents/env-validator.ts [options]
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface EnvValidatorOptions {
@@ -183,25 +183,7 @@ Begin your analysis now.
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "env",
-    "example",
-    "generate-types",
-    "generate-starter",
-    "no-check-usage",
-    "strict",
-    "help",
-    "h"
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -227,7 +209,16 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "env",
+    "example",
+    "generate-types",
+    "generate-starter",
+    "no-check-usage",
+    "strict",
+    "help",
+    "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

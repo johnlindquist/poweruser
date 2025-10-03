@@ -29,7 +29,7 @@
  *   bun run agents/api-response-type-generator.ts https://api.example.com/data types/api.ts --check-changes
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface ApiTypeGeneratorOptions {
@@ -278,16 +278,7 @@ ${checkChanges ? '6' : '5'}. Save the generated types to: ${outputFile}
 Focus on creating production-ready, well-documented types that developers can use immediately.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["zod", "mocks", "check-changes", "checkChanges", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -313,7 +304,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "zod", "mocks", "check-changes", "checkChanges", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

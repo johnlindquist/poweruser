@@ -21,7 +21,7 @@
  *   bun run agents/git-branch-janitor.ts --days 60 --include-remote
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface BranchJanitorOptions {
@@ -129,16 +129,7 @@ ${dryRun ? "## DRY RUN MODE\nYou are in dry-run mode. Show what WOULD be deleted
 Start by analyzing the git repository and generating the cleanup report.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["dry-run", "dryRun", "days", "include-remote", "includeRemote", "help", "h"] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -161,7 +152,9 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "dry-run", "dryRun", "days", "include-remote", "includeRemote", "help", "h"
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

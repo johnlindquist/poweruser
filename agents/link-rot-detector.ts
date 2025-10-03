@@ -27,7 +27,7 @@
  *   bun run agents/link-rot-detector.ts https://example.com --report links.md
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface LinkRotOptions {
@@ -338,16 +338,6 @@ ${checkExternal ? `
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["depth", "report", "no-images", "no-external", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -385,7 +375,7 @@ const mcpConfig = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags(["depth", "report", "no-images", "no-external", "help", "h"]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

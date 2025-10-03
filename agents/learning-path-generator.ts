@@ -27,7 +27,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface LearningPathOptions {
@@ -154,16 +154,6 @@ Be specific, actionable, and encouraging. This roadmap should transform aimless 
 IMPORTANT: Write the final learning path to a file using the Write tool.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["report", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -189,7 +179,7 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags(["report", "help", "h"]);
 
 // Change working directory to target
 const originalCwd = process.cwd();

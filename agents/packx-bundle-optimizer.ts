@@ -23,7 +23,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type OutputStyle = "markdown" | "xml" | "plain";
@@ -321,26 +321,7 @@ ${!copyToClipboard ? '3' : '2'}. Consider running packx again with refined terms
 Begin by analyzing the codebase structure, then iteratively refine the packx search until you achieve the optimal bundle!`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "max-tokens",
-    "maxTokens",
-    "output",
-    "copy",
-    "style",
-    "include-tests",
-    "includeTests",
-    "help",
-    "h"
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -373,7 +354,17 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "max-tokens",
+    "maxTokens",
+    "output",
+    "copy",
+    "style",
+    "include-tests",
+    "includeTests",
+    "help",
+    "h"
+  ]);
 
 // Change to project directory before running claude
 process.chdir(options.projectPath);

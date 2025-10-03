@@ -23,7 +23,7 @@
  *   bun run agents/dream-feature-mapper.ts "dark mode support" --complexity quick --no-code
  */
 
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type ComplexityLevel = "quick" | "detailed" | "comprehensive";
@@ -269,24 +269,7 @@ Generate 2-3 starter code snippets that match the project's coding style:
 Start by analyzing the codebase structure and tech stack.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "output",
-    "complexity",
-    "no-code",
-    "noCode",
-    "focus",
-    "help",
-    "h",
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -314,7 +297,15 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+    "output",
+    "complexity",
+    "no-code",
+    "noCode",
+    "focus",
+    "help",
+    "h",
+  ]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

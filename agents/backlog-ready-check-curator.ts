@@ -8,47 +8,19 @@
  */
 
 import { resolve } from "node:path";
-import { claude, getPositionals, parsedArgs } from "./lib";
+import { claude, getPositionals, readStringFlag, readNumberFlag, readBooleanFlag } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
-const values = parsedArgs.values as Record<string, unknown>;
 
 const projectRoot = positionals[0]
   ? resolve(positionals[0])
   : process.cwd();
 
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === "string" && raw.length > 0) {
-    return raw;
-  }
-
-  const index = argv.indexOf(`--${name}`);
-  if (index !== -1 && argv[index + 1] && !argv[index + 1]!.startsWith("--")) {
-    return argv[index + 1]!;
-  }
-
-  return undefined;
-}
-
 const outputFile = readStringFlag("output") ?? "backlog-ready-check-report.md";
-
-const limitArg = (() => {
-  const direct = readStringFlag("limit");
-  if (direct) return direct;
-  const equalsForm = argv.find((arg) => arg.startsWith("--limit="));
-  return equalsForm ? equalsForm.split("=")[1] ?? "" : undefined;
-})();
-
-const backlogLimit = (() => {
-  const parsed = limitArg ? Number.parseInt(limitArg, 10) : 25;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
-})();
-
-const strictMode = values.strict === true || argv.includes("--strict");
-const dryRun = values["dry-run"] === true || argv.includes("--dry-run");
+const backlogLimit = readNumberFlag("limit", 25);
+const strictMode = readBooleanFlag("strict", false);
+const dryRun = readBooleanFlag("dry-run", false);
 
 const systemPrompt = `You are the Backlog Ready-Check Curator — an agent obsessed with backlog clarity and execution momentum.
 

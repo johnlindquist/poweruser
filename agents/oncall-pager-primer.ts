@@ -16,7 +16,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface OncallPrimerOptions {
@@ -191,16 +191,6 @@ Steps:
 Be explicit about any assumptions and outline next actions for the oncall engineer.`.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["incidents", "runbooks", "dashboards", "rotation", "lookback", "timezone", "report", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -243,7 +233,7 @@ const additionalDirs = [
   .filter((p): p is string => Boolean(p))
   .filter((p, i, arr) => arr.indexOf(p) === i); // unique only
 
-removeAgentFlags();
+removeAgentFlags(["incidents", "runbooks", "dashboards", "rotation", "lookback", "timezone", "report", "help", "h"]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

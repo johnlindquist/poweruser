@@ -26,7 +26,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type DocStyle = "jsdoc" | "tsdoc";
@@ -164,16 +164,6 @@ Do not modify any function/class code, only add documentation comments.
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["style", "examples", "help", "h"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -194,7 +184,7 @@ const settings: Settings = {};
 
 const allowedTools = ["Read", "Edit", "TodoWrite"];
 
-removeAgentFlags();
+removeAgentFlags(["style", "examples", "help", "h"]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-haiku-4-5-20250903",

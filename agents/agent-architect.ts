@@ -21,7 +21,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface AgentArchitectOptions {
@@ -89,16 +89,6 @@ Always:
 - Make the agent executable with proper shebang`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = ["spec-file", "specFile", "output", "dry-run", "dryRun", "max-turns", "maxTurns", "model", "help"] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 function printHelp() {
   console.log(`
@@ -208,7 +198,7 @@ const prompt = buildPrompt(options);
 const systemPrompt = buildSystemPrompt(options);
 const settings: Settings = {};
 
-removeAgentFlags();
+removeAgentFlags(["spec-file", "specFile", "output", "dry-run", "dryRun", "max-turns", "maxTurns", "model", "help"]);
 
 const defaultFlags: ClaudeFlags = {
   model: options.model,

@@ -18,7 +18,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs, removeAgentFlags } from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 type GroupByType = 'error-type' | 'file' | 'timestamp';
@@ -348,30 +348,6 @@ Begin your comprehensive error log analysis now.
 `.trim();
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "log",
-    "since",
-    "group-by",
-    "groupBy",
-    "no-git",
-    "create-issues",
-    "createIssues",
-    "no-prioritize",
-    "output",
-    "max-errors",
-    "maxErrors",
-    "help",
-    "h",
-  ] as const;
-
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -401,7 +377,21 @@ const allowedTools = [
   "TodoWrite",
 ];
 
-removeAgentFlags();
+removeAgentFlags([
+  "log",
+  "since",
+  "group-by",
+  "groupBy",
+  "no-git",
+  "create-issues",
+  "createIssues",
+  "no-prioritize",
+  "output",
+  "max-errors",
+  "maxErrors",
+  "help",
+  "h",
+]);
 
 const defaultFlags: ClaudeFlags = {
   model: "claude-sonnet-4-5-20250929",

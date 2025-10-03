@@ -28,7 +28,7 @@
  */
 
 import { resolve } from "node:path";
-import { claude, parsedArgs } from "./lib";
+import { claude, parsedArgs , removeAgentFlags} from "./lib";
 import type { ClaudeFlags, Settings } from "./lib";
 
 interface IntegrationSeedOptions {
@@ -204,29 +204,7 @@ Your mission: transform recent defect signals into a deterministic integration d
 - Close with a concise checklist of recommended next actions for the human operator.`;
 }
 
-function removeAgentFlags(): void {
-  const values = parsedArgs.values as Record<string, unknown>;
-  const agentKeys = [
-    "project",
-    "tickets",
-    "analytics",
-    "feature-flags",
-    "environment",
-    "seed-out",
-    "report-out",
-    "slack-out",
-    "max-age",
-    "no-third-party",
-    "help",
-    "h"
-  ] as const;
 
-  for (const key of agentKeys) {
-    if (key in values) {
-      delete values[key];
-    }
-  }
-}
 
 const options = parseOptions();
 if (!options) {
@@ -303,7 +281,20 @@ const agentsConfig = {
   },
 };
 
-removeAgentFlags();
+removeAgentFlags([
+    "project",
+    "tickets",
+    "analytics",
+    "feature-flags",
+    "environment",
+    "seed-out",
+    "report-out",
+    "slack-out",
+    "max-age",
+    "no-third-party",
+    "help",
+    "h"
+  ]);
 
 // Change to project directory
 const originalCwd = process.cwd();
