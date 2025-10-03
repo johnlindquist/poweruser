@@ -2,6 +2,7 @@
  * Type definitions aligned with claude-code-settings.schema.json
  */
 
+import type { HookCallbackMatcher, HookEvent } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionMode } from "./claude-flags.types";
 
 export interface HookCommand {
@@ -60,7 +61,7 @@ export interface Settings {
   enableAllProjectMcpServers?: boolean;
   enabledMcpjsonServers?: string[];
   disabledMcpjsonServers?: string[];
-  hooks?: HooksConfig;
+  hooks?: HooksConfig | Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   forceLoginMethod?: LoginMethod;
   disableAllHooks?: boolean;
   spinnerTipsEnabled?: boolean;

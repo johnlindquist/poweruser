@@ -2,6 +2,7 @@
 
 import { spawn } from 'child_process';
 import { parseArgs } from 'util';
+import * as readline from 'readline';
 
 // Parse command line arguments
 const { values, positionals } = parseArgs({
@@ -9,6 +10,7 @@ const { values, positionals } = parseArgs({
   options: {
     help: { type: 'boolean', short: 'h' },
     verbose: { type: 'boolean', short: 'v' },
+    interactive: { type: 'boolean', short: 'i' },
   },
   allowPositionals: true,
 });
@@ -20,18 +22,19 @@ Usage: bun run headless/claude-chat.ts [options] <initial-message>
 A CLI tool that spawns a Claude Code instance and sends messages using --input-format stream-json.
 
 Options:
-  -h, --help      Show this help message
-  -v, --verbose   Enable verbose output
+  -h, --help          Show this help message
+  -v, --verbose       Enable verbose output
+  -i, --interactive   Keep Claude alive for multi-turn conversation
 
 Examples:
   # Single message
   bun run headless/claude-chat.ts "Explain the code in agents/test-generator.ts"
 
+  # Interactive mode - keep conversation going
+  bun run headless/claude-chat.ts -i "Hello"
+
   # With verbose output
   bun run headless/claude-chat.ts -v "List all TypeScript files"
-
-  # Interactive mode (send multiple messages via stdin)
-  echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Hello"}]}}' | bun run headless/claude-chat.ts
 `);
   process.exit(0);
 }
@@ -57,10 +60,12 @@ async function main() {
   const initialMessage = positionals.join(' ');
 
   // Spawn claude process with streaming JSON I/O
+  // Note: --verbose is required when using --output-format=stream-json with -p
   const claude = spawn('claude', [
     '-p',
     '--output-format=stream-json',
     '--input-format=stream-json',
+    '--verbose',
   ]);
 
   // Handle stdout - stream JSON responses
@@ -116,23 +121,80 @@ async function main() {
     process.exit(code || 0);
   });
 
-  // Send initial message if provided as argument
-  if (initialMessage) {
-    const message = createUserMessage(initialMessage);
+  // Function to send a message
+  const sendMessage = (text: string) => {
+    const message = createUserMessage(text);
     if (values.verbose) {
       console.log('Sending:', message);
     }
     claude.stdin.write(message + '\n');
-    claude.stdin.end();
-  } else {
-    // Read from stdin and forward to claude
-    process.stdin.on('data', (data) => {
-      claude.stdin.write(data);
+  };
+
+  // Send initial message if provided as argument
+  if (initialMessage) {
+    sendMessage(initialMessage);
+  }
+
+  // If interactive mode, set up readline interface
+  if (values.interactive) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      prompt: '\nYou: ',
     });
 
-    process.stdin.on('end', () => {
+    // Wait for initial response before prompting
+    let isFirstMessage = true;
+
+    // Show prompt after first response completes
+    claude.stdout.on('data', (data) => {
+      const lines = data.toString().split('\n').filter((line: string) => line.trim());
+
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+
+          if (msg.type === 'result' && isFirstMessage) {
+            isFirstMessage = false;
+            rl.prompt();
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    });
+
+    rl.on('line', (input) => {
+      const trimmed = input.trim();
+      if (trimmed === 'exit' || trimmed === 'quit') {
+        rl.close();
+        claude.stdin.end();
+        return;
+      }
+      if (trimmed) {
+        sendMessage(trimmed);
+      }
+    });
+
+    rl.on('close', () => {
       claude.stdin.end();
     });
+  } else {
+    // Single message mode - close stdin after a delay
+    if (initialMessage) {
+      setTimeout(() => {
+        claude.stdin.end();
+      }, 100);
+    } else {
+      // Read from stdin and forward to claude
+      process.stdin.on('data', (data) => {
+        claude.stdin.write(data);
+      });
+
+      process.stdin.on('end', () => {
+        claude.stdin.end();
+      });
+    }
   }
 }
 

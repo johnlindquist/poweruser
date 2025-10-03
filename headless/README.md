@@ -21,6 +21,16 @@ Pass a message as a command-line argument:
 bun run headless/claude-chat.ts "Explain the code in agents/test-generator.ts"
 ```
 
+### Interactive Mode
+
+Keep the Claude instance alive for multi-turn conversations:
+
+```bash
+bun run headless/claude-chat.ts -i "Hello, what files are in the headless directory?"
+# After Claude responds, you can type another message
+# Type 'exit' or 'quit' to end the conversation
+```
+
 ### Verbose Mode
 
 Enable verbose output to see metadata and debug information:
