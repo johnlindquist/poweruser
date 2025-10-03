@@ -20,7 +20,7 @@
  *   bun run agents/chrome-console-error-hunter.ts https://example.com --report errors.md
  */
 
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readNumberFlag, readBooleanFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 interface ErrorHunterOptions {
@@ -52,7 +52,6 @@ Options:
 `);
 }
 
-const argv = process.argv.slice(2);
 const positionals = getPositionals();
 const values = parsedArgs.values as Record<string, unknown>;
 
@@ -77,52 +76,6 @@ try {
   process.exit(1);
 }
 
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function readNumberFlag(name: string, defaultValue: number): number {
-  const raw = readStringFlag(name);
-  if (!raw) {
-    return defaultValue;
-  }
-
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    console.error(`❌ Error: --${name} must be a positive integer`);
-    process.exit(1);
-  }
-
-  return Math.floor(parsed);
-}
-
-function readBooleanFlag(name: string, defaultValue: boolean): boolean {
-  if (values[name] === true) return true;
-  if (values[name] === false) return false;
-  return argv.includes(`--${name}`) ? true : defaultValue;
-}
 
 const includeWarnings = !readBooleanFlag('no-warnings', false);
 const checkNetworkErrors = !readBooleanFlag('no-network', false);

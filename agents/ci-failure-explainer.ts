@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { claude, getPositionals, parsedArgs } from './lib';
+import { claude, getPositionals, parsedArgs, readStringFlag, readBooleanFlag, collectRepeatedFlag } from './lib';
 import type { ClaudeFlags, Settings } from './lib';
 
 type Provider = 'github' | 'gitlab' | 'circleci' | 'azure' | 'buildkite' | 'jenkins' | 'other';
@@ -50,77 +50,9 @@ if (helpFlag) {
   process.exit(0);
 }
 
-function collectRepeatedArgs(name: string): string[] {
-  const collected: string[] = [];
-
-  // --name=value form
-  for (const rawArg of argv) {
-    const arg = rawArg ?? '';
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value) {
-        collected.push(value);
-      }
-    }
-  }
-
-  // --name value form
-  for (let i = 0; i < argv.length; i += 1) {
-    const current = argv[i];
-    if (current === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        collected.push(next);
-      }
-    }
-  }
-
-  const rawValue = values[name];
-  if (typeof rawValue === 'string') {
-    collected.push(rawValue);
-  } else if (Array.isArray(rawValue)) {
-    for (const item of rawValue) {
-      if (typeof item === 'string') {
-        collected.push(item);
-      }
-    }
-  }
-
-  return collected;
-}
-
-function readStringFlag(name: string): string | undefined {
-  const raw = values[name];
-  if (typeof raw === 'string' && raw.length > 0) {
-    return raw;
-  }
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg) continue;
-    if (arg === `--${name}`) {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        return next;
-      }
-    }
-    if (arg.startsWith(`--${name}=`)) {
-      const [, value] = arg.split('=', 2);
-      if (value && value.length > 0) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function readBooleanFlag(name: string): boolean {
-  return values[name] === true || argv.includes(`--${name}`);
-}
 
 function parseCliOptions(): CiFailureExplainerOptions {
-  const logPaths = [...collectRepeatedArgs('log'), ...positionals];
+  const logPaths = [...collectRepeatedFlag('log'), ...positionals];
 
   if (logPaths.length === 0) {
     console.error('❌ Error: Provide at least one --log path');
@@ -141,8 +73,8 @@ function parseCliOptions(): CiFailureExplainerOptions {
     focusBranch: readStringFlag('branch'),
     compareBranch: readStringFlag('compare'),
     flakyWindowMinutes,
-    includeTimeline: readBooleanFlag('timeline'),
-    fetchArtifacts: readBooleanFlag('fetch-artifacts'),
+    includeTimeline: readBooleanFlag('timeline', false),
+    fetchArtifacts: readBooleanFlag('fetch-artifacts', false),
   };
 }
 
