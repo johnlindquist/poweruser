@@ -167,6 +167,8 @@ const prompt = buildPrompt(options);
 const claudeSettings: Settings = {};
 
 const allowedTools = [
+  'mcp__chrome-devtools__get_network_request',
+  'mcp__chrome-devtools__list_pages',
   'mcp__chrome-devtools__navigate_page',
   'mcp__chrome-devtools__performance_start_trace',
   'mcp__chrome-devtools__performance_stop_trace',
